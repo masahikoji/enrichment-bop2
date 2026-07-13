@@ -33,6 +33,8 @@ BOP2_N_CORES=4 Rscript run_all.R
 
 `R/01_main_binary_exact.R` performs exact recursive enumeration for the binary endpoint and writes results to `results/main/`.
 
+The main binary-endpoint design is calibrated under the single prespecified alternative configuration $(\theta_+,\theta_-)=(0.40,0.20)$ while averaging over the prevalence grid. The selected boundaries are then held fixed and evaluated over $\theta_+\in\{0.40,0.50,0.60\}$ and $\theta_-\in\{0.20,0.10\}$. To avoid an unnecessarily conservative choice caused by discrete boundaries, the proposed design is selected from candidates with maximum global type I error in $[0.09,0.10]$ whenever this set is nonempty.
+
 `R/02_main_tables.R` creates:
 
 - `tables/main/table_proposed_boundaries_compact.tex` (`tab:proposed_boundaries_compact`)

@@ -6,7 +6,6 @@ options(stringsAsFactors = FALSE, scipen = 999)
 # User settings
 
 alpha <- 0.10
-alpha_lower <- 0.09
 
 interim_n <- c(20L, 30L)
 N_A <- 40L
@@ -530,12 +529,11 @@ select_proposed_pair <- function(calibration) {
     )
   }
 
-  preferred <- feasible &
-    calibration$max_global_estimate >= alpha_lower - 1e-12
-  pool <- if (any(preferred)) preferred else feasible
-
+  # No alternative configuration is used in this supplementary type I error
+  # demonstration. Select the feasible candidate with the largest estimated
+  # maximum global type I error, then use the minimum and mean values as ties.
   score1 <- calibration$max_global_estimate
-  best <- which(pool)
+  best <- which(feasible)
   tol <- 1e-12
 
   target <- max(score1[best])
@@ -587,14 +585,12 @@ select_componentwise_pair <- function(calibration) {
     ncol = n_lambda
   )
 
-  preferred <- feasible &
-    all_estimate_matrix >= alpha_lower - 1e-12 &
-    calibration$max_positive_estimate >= alpha_lower - 1e-12
-  pool <- if (any(preferred)) preferred else feasible
-
+  # Select the feasible pair whose two marginal type I error estimates are
+  # closest to (alpha, alpha) in squared Euclidean distance. No constraint is
+  # imposed on their union for the componentwise comparator.
   distance <- (alpha - all_estimate_matrix)^2 +
     (alpha - calibration$max_positive_estimate)^2
-  best <- which(pool)
+  best <- which(feasible)
   tol <- 1e-12
 
   target <- min(distance[best])
@@ -934,7 +930,6 @@ rownames(null_scenarios) <- NULL
 settings_table <- data.frame(
   Parameter = c(
     "alpha",
-    "alpha lower preference",
     "all-comer interim looks",
     "post-enrichment positive looks",
     "N_A",
@@ -953,7 +948,6 @@ settings_table <- data.frame(
   ),
   Value = c(
     alpha,
-    alpha_lower,
     paste(interim_n, collapse = ", "),
     paste(post_enrichment_n, collapse = ", "),
     N_A,

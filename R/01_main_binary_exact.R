@@ -21,9 +21,14 @@ prior_b <- 0.5
 prevalence_grid <- c(0.4, 0.5, 0.6, 0.7, 0.8)
 
 theta_pos_grid <- c(p1, p1 + 0.10, p1 + 0.20)
-theta_neg_grid <- c(p0, p0 - 0.10, p0 - 0.20)
+theta_neg_grid <- c(p0, p0 - 0.10)
 
 lambda_grid <- seq(0.005, 1.000, by = 0.005)
+
+# gamma is a positive shape parameter rather than a probability and therefore
+# need not be bounded by one. Values above one allow the cutoff to remain
+# relatively close to one early in the trial and decrease more sharply later.
+# The upper limit of eight is a numerical search bound.
 gamma_grid <- seq(0.050, 8.000, by = 0.050)
 
 repo_root <- normalizePath(
@@ -58,7 +63,7 @@ if (quick_test) {
   gamma_grid <- seq(0.25, 2.00, by = 0.25)
   prevalence_grid <- c(0.4, 0.8)
   theta_pos_grid <- c(0.4, 0.6)
-  theta_neg_grid <- c(0.2, 0.0)
+  theta_neg_grid <- c(0.2, 0.1)
   n_cores <- 1L
   output_dir <- file.path(result_root, "quick_test")
   dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
@@ -793,8 +798,26 @@ alternative_scenarios <- alternative_scenarios[
         -alternative_scenarios$theta_neg),
 ]
 alternative_scenarios$scenario_type <- "Alternative"
+
+# A single prespecified alternative configuration is used for calibration.
+# Other response configurations are used only to evaluate the operating
+# characteristics of the selected fixed design.
+alternative_scenarios$used_for_calibration <-
+  abs(alternative_scenarios$theta_pos - p1) < 1e-12 &
+  abs(alternative_scenarios$theta_neg - p0) < 1e-12
+null_scenarios$used_for_calibration <- FALSE
+
 alternative_scenarios <- alternative_scenarios[
-  , c("scenario_type", "pi", "theta_pos", "theta_neg")
+  , c(
+    "scenario_type", "pi", "theta_pos", "theta_neg",
+    "used_for_calibration"
+  )
+]
+null_scenarios <- null_scenarios[
+  , c(
+    "scenario_type", "pi", "theta_pos", "theta_neg",
+    "used_for_calibration"
+  )
 ]
 
 all_scenarios <- rbind(null_scenarios, alternative_scenarios)
@@ -837,7 +860,13 @@ max_positive_type1 <- matrix(-Inf, nrow = nA, ncol = nP)
 avg_power <- matrix(0, nrow = nA, ncol = nP)
 min_power <- matrix(Inf, nrow = nA, ncol = nP)
 
-n_alt <- nrow(alternative_scenarios)
+n_calibration_alt <- sum(alternative_scenarios$used_for_calibration)
+if (n_calibration_alt != length(prevalence_grid)) {
+  stop(
+    "The single calibration alternative must contain one scenario for each ",
+    "prevalence value."
+  )
+}
 
 message("Evaluating exact null and alternative operating characteristics...")
 for (s_idx in seq_along(components)) {
@@ -848,8 +877,8 @@ for (s_idx in seq_along(components)) {
     max_global_type1 <- pmax(max_global_type1, metrics$PRN_any)
     max_all_type1 <- pmax(max_all_type1, metrics$PRN_all)
     max_positive_type1 <- pmax(max_positive_type1, metrics$PRN_positive)
-  } else {
-    avg_power <- avg_power + metrics$PRN_any / n_alt
+  } else if (isTRUE(all_scenarios$used_for_calibration[s_idx])) {
+    avg_power <- avg_power + metrics$PRN_any / n_calibration_alt
     min_power <- pmin(min_power, metrics$PRN_any)
   }
 
@@ -935,6 +964,16 @@ selected_designs <- rbind(
   make_selected_row("Globally calibrated", selected_global),
   make_selected_row("Componentwise calibrated", selected_componentwise)
 )
+
+if (any(abs(selected_designs$gamma_A - max(gamma_grid)) < 1e-12) ||
+    any(abs(selected_designs$gamma_positive - max(gamma_grid)) < 1e-12)) {
+  warning(
+    "At least one selected gamma value is at the upper search limit. ",
+    "Consider extending gamma_grid to verify that the selected boundary table ",
+    "is not constrained by the numerical bound."
+  )
+}
+
 write.csv(selected_designs,
           file.path(output_dir, "selected_designs.csv"),
           row.names = FALSE)
@@ -944,6 +983,7 @@ saveRDS(
   list(
     settings = list(
       p0 = p0, p1 = p1, alpha = alpha, alpha_lower = alpha_lower,
+      calibration_alternative = c(theta_pos = p1, theta_neg = p0),
       interim_n = interim_n, N_A = N_A, N_pos = N_pos,
       n_pos_min = n_pos_min, post_enrichment_n = post_enrichment_n,
       prior_a = prior_a, prior_b = prior_b,
@@ -1053,6 +1093,7 @@ write.csv(
 settings_table <- data.frame(
   Parameter = c(
     "Analysis type", "p0", "p1", "alpha", "alpha_lower",
+    "calibration alternative",
     "all-comer interim looks", "post-enrichment positive looks",
     "N_A", "N_positive", "n_positive_min", "prior_a", "prior_b",
     "prevalence grid", "theta_positive grid", "theta_negative grid",
@@ -1061,6 +1102,7 @@ settings_table <- data.frame(
   ),
   Value = c(
     "Exact recursive enumeration", p0, p1, alpha, alpha_lower,
+    paste0("theta_positive = ", p1, "; theta_negative = ", p0),
     paste(interim_n, collapse = ", "),
     paste(post_enrichment_n, collapse = ", "),
     N_A, N_pos, n_pos_min, prior_a, prior_b,

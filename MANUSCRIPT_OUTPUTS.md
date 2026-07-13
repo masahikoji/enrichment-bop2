@@ -20,6 +20,8 @@ Generated manuscript tables:
 
 The main numerical outputs are written to `results/main/`.
 
+The main calibration uses one alternative configuration, $(\theta_+,\theta_-)=(0.40,0.20)$, across the prespecified prevalence grid. The fixed selected design is evaluated over 30 combinations of prevalence and subgroup response probabilities.
+
 ## Supplementary material
 
 Run:
