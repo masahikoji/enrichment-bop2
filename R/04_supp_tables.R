@@ -1,15 +1,27 @@
-# Create the two LaTeX tables reported in the supplementary material.
+# Create LaTeX tables for the complex-endpoint type I error evaluation.
+#
+# Run through run_supplement.R from the repository root. Required inputs are
+# read from results/supplement and LaTeX tables are written to
+# tables/supplement.
 
+rm(list = ls())
 options(stringsAsFactors = FALSE, scipen = 999)
 
-# Paths and fixed design settings
+## -----------------------------------------------------------------------------
+## 1. Paths and fixed design settings
+## -----------------------------------------------------------------------------
 
-repo_root <- normalizePath(
-  Sys.getenv("ENRICHMENT_BOP2_ROOT", unset = getwd()),
-  mustWork = FALSE
-)
-result_dir <- file.path(repo_root, "results", "supplement")
-table_dir <- file.path(repo_root, "tables", "supplement")
+project_dir <- path.expand(Sys.getenv(
+  "ENRICHMENT_BOP2_ROOT",
+  unset = normalizePath(getwd(), mustWork = TRUE)
+))
+quick_test <- identical(Sys.getenv("BOP2_COMPLEX_QUICK"), "1")
+result_dir <- file.path(project_dir, "results", "supplement")
+table_dir <- file.path(project_dir, "tables", "supplement")
+if (quick_test) {
+  result_dir <- file.path(result_dir, "quick_test")
+  table_dir <- file.path(table_dir, "quick_test")
+}
 dir.create(table_dir, recursive = TRUE, showWarnings = FALSE)
 
 selected_file <- file.path(
@@ -74,7 +86,9 @@ endpoint_order <- c(
   "Efficacy and toxicity"
 )
 
-# Boundary calculation
+## -----------------------------------------------------------------------------
+## 2. Boundary calculation
+## -----------------------------------------------------------------------------
 
 lower_tail_boundary <- function(
     n, phi, prior_event, prior_other, cutoff
@@ -131,6 +145,8 @@ calculate_endpoint_boundary <- function(
       cutoff = cutoff
     )
 
+    # The rule uses AND. If either component cannot be crossed, the combined
+    # stopping rule cannot be crossed.
     if (cr_boundary < 0L || crpr_boundary < 0L) {
       return(c(boundary1 = NA_integer_, boundary2 = NA_integer_))
     }
@@ -156,6 +172,7 @@ calculate_endpoint_boundary <- function(
       cutoff = cutoff
     )
 
+    # The rule uses AND.
     if (or_boundary < 0L || efs_boundary < 0L) {
       return(c(boundary1 = NA_integer_, boundary2 = NA_integer_))
     }
@@ -375,7 +392,9 @@ for (endpoint in endpoint_order) {
 compact_boundaries <- do.call(rbind, boundary_rows)
 rownames(compact_boundaries) <- NULL
 
-# Compact boundary LaTeX table
+## -----------------------------------------------------------------------------
+## 3. Compact boundary LaTeX table
+## -----------------------------------------------------------------------------
 
 boundary_tex_rows <- character()
 previous_endpoint <- ""
@@ -431,7 +450,7 @@ boundary_tex <- c(
   "\\begin{table}[htbp]",
   "\\centering",
   paste0(
-    "\\caption{Compact presentation of the stopping boundaries ",
+    "\\caption{Compact presentation of the decision boundaries ",
     "for the globally calibrated design with complex categorical ",
     "endpoints.}"
   ),
@@ -441,7 +460,7 @@ boundary_tex <- c(
   "\\toprule",
   paste0(
     "Endpoint & Population & Number evaluated & ",
-    "Stop the trial if \\\\"
+    "Futility or no-claim rule \\\\"
   ),
   "\\midrule",
   boundary_tex_rows,
@@ -450,12 +469,14 @@ boundary_tex <- c(
   "\\begin{minipage}{0.98\\textwidth}",
   "\\footnotesize",
   paste0(
-    "The all-comer boundaries apply at 20 and 30 patients and at ",
-    "the final look of 40 patients. Biomarker-positive boundaries ",
-    "apply when enrichment is first considered and, when applicable, ",
-    "at the post-enrichment looks of 20 and 30 patients and the final ",
-    "look of 40 patients. At a final look, satisfying the listed ",
-    "stopping rule results in no efficacy claim."
+    "The all-comer boundaries apply at the interim analyses of 20 and 30 ",
+    "patients and at the final analysis of 40 patients. Biomarker-positive ",
+    "boundaries apply at the first biomarker-positive assessment and, when ",
+    "applicable, at subsequent analyses of 20 and 30 cumulative ",
+    "biomarker-positive patients and at the final analysis of 40 ",
+    "biomarker-positive patients. At an interim analysis, satisfying the ",
+    "listed rule results in stopping for futility or unacceptability. At the ",
+    "final analysis, satisfying the listed rule results in no efficacy claim."
   ),
   "\\end{minipage}",
   "\\end{table}"
@@ -466,7 +487,9 @@ boundary_output <- file.path(
 )
 writeLines(boundary_tex, boundary_output, useBytes = TRUE)
 
-# Type I error LaTeX table
+## -----------------------------------------------------------------------------
+## 4. Type I error LaTeX table
+## -----------------------------------------------------------------------------
 
 type1$Endpoint <- factor(
   type1$Endpoint,
@@ -578,7 +601,7 @@ type1_tex <- c(
   "\\toprule",
   paste0(
     "Endpoint & $\\pi$ & \\multicolumn{3}{c}{Proposed} & ",
-    "\\multicolumn{3}{c}{Componentwise BOP2} \\\\"
+    "\\multicolumn{3}{c}{Componentwise} \\\\"
   ),
   paste0(
     " & & \\textbf{PRN-any} & PRN-all & PRN-positive & ",
@@ -594,11 +617,10 @@ type1_tex <- c(
   paste0(
     "Values are percentages based on ", replicate_note, ". ",
     "Boldface indicates PRN-any, the primary global type I error ",
-    "measure, defined as the probability of an efficacy claim in ",
-    "either population. Componentwise BOP2 denotes the naive adaptive ",
-    "enrichment implementation in which the all-comer and ",
-    "biomarker-positive BOP2 components are calibrated separately, ",
-    "without controlling their union."
+    "measure. The proposed design is calibrated using the probability of ",
+    "an efficacy claim in either population, whereas the componentwise ",
+    "design calibrates the all-comer and biomarker-positive claim ",
+    "probabilities separately."
   ),
   "\\end{minipage}",
   "\\end{table}"
@@ -609,10 +631,12 @@ type1_output <- file.path(
 )
 writeLines(type1_tex, type1_output, useBytes = TRUE)
 
-# Input file and audit CSV
+## -----------------------------------------------------------------------------
+## 5. Input file and audit CSV
+## -----------------------------------------------------------------------------
 
 input_output <- file.path(
-  table_dir, "supplement_tables_input.tex"
+  table_dir, "supplemental_complex_endpoint_tables_input.tex"
 )
 writeLines(
   c(
@@ -631,7 +655,20 @@ write.csv(
   row.names = FALSE
 )
 
+output_paths <- file.path(
+  table_dir,
+  c(
+    "table_complex_endpoint_boundaries_compact.tex",
+    "table_complex_endpoint_type1.tex",
+    "supplemental_complex_endpoint_tables_input.tex"
+  )
+)
+
 message("Created:")
-message("  ", normalizePath(boundary_output, mustWork = FALSE))
-message("  ", normalizePath(type1_output, mustWork = FALSE))
-message("  ", normalizePath(input_output, mustWork = FALSE))
+for (output_path in output_paths) {
+  if (file.exists(output_path)) {
+    message("  ", normalizePath(output_path, mustWork = FALSE))
+  } else {
+    warning("Expected output file was not created: ", output_path)
+  }
+}

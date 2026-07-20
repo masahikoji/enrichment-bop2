@@ -1,16 +1,16 @@
 # Globally calibrated enrichment BOP2: reproducibility code
 
-This repository reproduces the numerical results and LaTeX tables reported in the main manuscript and supplementary material.
+This repository reproduces the numerical results and LaTeX tables reported in the main manuscript and supplementary material for the globally calibrated adaptive-enrichment BOP2 design.
 
-See `MANUSCRIPT_OUTPUTS.md` for a direct mapping between manuscript table labels and generated files.
+See `MANUSCRIPT_OUTPUTS.md` for the mapping between manuscript table labels and generated files.
 
 ## Requirements
 
 - R 4.2 or later
-- Base R packages only for the analyses
+- Base and recommended R packages only for the analyses
 - Optional: `writexl` or `openxlsx` for consolidated Excel workbooks
 
-Run commands from the repository root.
+Run all commands from the repository root.
 
 ```bash
 Rscript run_main.R
@@ -23,44 +23,51 @@ To reproduce everything:
 Rscript run_all.R
 ```
 
-Parallel workers can be set before execution:
+Parallel workers may be set before execution:
 
 ```bash
 BOP2_N_CORES=4 Rscript run_all.R
 ```
 
-## Main manuscript
+## Main manuscript and binary-endpoint supplement
 
 `R/01_main_binary_exact.R` performs exact recursive enumeration for the binary endpoint and writes results to `results/main/`.
 
-The main binary-endpoint design is calibrated under the single prespecified alternative configuration $(\theta_+,\theta_-)=(0.40,0.20)$ while averaging over the prevalence grid. The selected boundaries are then held fixed and evaluated over $\theta_+\in\{0.40,0.50,0.60\}$ and $\theta_-\in\{0.20,0.10\}$. To avoid an unnecessarily conservative choice caused by discrete boundaries, the proposed design is selected from candidates with maximum global type I error in $[0.09,0.10]$ whenever this set is nonempty.
+The proposed design is selected from **all** candidate boundary pairs satisfying
 
-`R/02_main_tables.R` creates:
+```text
+maximum global type I error over the prevalence grid <= 0.10
+```
 
-- `tables/main/table_proposed_boundaries_compact.tex` (`tab:proposed_boundaries_compact`)
-- `tables/main/table_type1_exact.tex` (`tab:type1_exact`)
-- `tables/main/table_power_comparison_exact_theta_pos_0p4.tex`
-- `tables/main/table_power_comparison_exact_theta_pos_0p5.tex`
-- `tables/main/table_power_comparison_exact_theta_pos_0p6.tex`
-- `tables/main/main_tables_input.tex`
+There is no lower type I error selection band. Among feasible candidates, the selection criteria are applied in this order:
 
-## Supplementary material
+1. largest average PRN-any under the single working alternative `(theta_positive, theta_negative) = (0.40, 0.20)` over the prevalence grid;
+2. largest minimum PRN-any under that working alternative;
+3. largest maximum global type I error, subject to remaining at or below 0.10.
+
+The fixed selected design is then evaluated over `theta_positive` in `{0.40, 0.50, 0.60}` and `theta_negative` in `{0.20, 0.10}`.
+
+`R/02_main_tables.R` creates the five main-manuscript tables and the three detailed binary enrichment-path tables in the Supplementary Material. Outputs are written to `tables/main/`.
+
+## Complex categorical endpoints
 
 `R/03_supp_complex_type1.R` performs simulation-based calibration and independent type I error evaluation for nested efficacy, co-primary efficacy, and joint efficacy-toxicity endpoints. Results are written to `results/supplement/`.
 
-`R/04_supp_tables.R` creates:
+The proposed complex-endpoint design requires the maximum one-sided 95% Wilson upper confidence bound for PRN-any over the prevalence grid to be at most 0.10. Among feasible candidates, the least conservative design is selected by average, then minimum, then maximum estimated PRN-any. The componentwise comparator separately constrains the Wilson upper bounds for PRN-all and PRN-positive and selects the feasible pair closest to `(0.10, 0.10)` in squared Euclidean distance.
 
-- `tables/supplement/table_complex_endpoint_boundaries_compact.tex` (`tab:complex_endpoint_boundaries_compact`)
-- `tables/supplement/table_complex_endpoint_type1.tex` (`tab:complex_endpoint_type1`)
-- `tables/supplement/supplement_tables_input.tex`
+`R/04_supp_tables.R` creates the complex-endpoint boundary and type I error tables in `tables/supplement/`.
 
 ## Quick checks
 
-The reduced settings below are intended only for code checks and do not reproduce manuscript results.
+The reduced settings below are intended only for code checks and do not reproduce manuscript results. Quick-check outputs are stored in `quick_test` subdirectories and do not overwrite full-analysis outputs.
 
 ```bash
 BOP2_QUICK=1 Rscript run_main.R
 BOP2_COMPLEX_QUICK=1 Rscript run_supplement.R
 ```
 
-Generated result and table files are ignored by Git by default. Remove the corresponding entries from `.gitignore` if selected outputs should be version-controlled.
+## Output policy
+
+Generated result and table files are ignored by Git by default. Remove or modify the corresponding `.gitignore` entries when selected outputs should be version-controlled.
+
+No local user paths or personal identifiers are embedded in the analysis scripts.

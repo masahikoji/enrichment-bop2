@@ -1,9 +1,18 @@
-# Complex-endpoint type I error analysis for the supplementary material.
-# Uses simulation-based calibration and relative repository paths.
+# Simulation-based global type I error evaluation for complex categorical
+# endpoints in the globally calibrated enrichment BOP2 design.
+#
+# Run through run_supplement.R from the repository root. Results are written
+# to results/supplement. Set BOP2_COMPLEX_QUICK=1 for a reduced code check.
+# Set BOP2_N_CORES to override the number of parallel workers. Set
+# BOP2_COMPLEX_N_CALIB and BOP2_COMPLEX_N_VALID to override calibration and
+# independent validation replicate counts.
 
+rm(list = ls())
 options(stringsAsFactors = FALSE, scipen = 999)
 
-# User settings
+## -----------------------------------------------------------------------------
+## 1. User settings
+## -----------------------------------------------------------------------------
 
 alpha <- 0.10
 
@@ -15,10 +24,13 @@ post_enrichment_n <- c(20L, 30L)
 
 prevalence_grid <- c(0.4, 0.5, 0.6, 0.7, 0.8)
 
+# Only global-null scenarios are evaluated. Because no alternative scenarios
+# are used for power optimization, gamma is fixed at 1 and lambda is calibrated.
 gamma_A <- 1
 gamma_pos <- 1
 lambda_grid <- seq(0.005, 1.000, by = 0.005)
 
+# Dirichlet prior with total prior sample size 1, as in the original BOP2 paper.
 dirichlet_prior <- rep(0.25, 4L)
 
 n_calibration <- as.integer(Sys.getenv(
@@ -29,11 +41,18 @@ n_validation <- as.integer(Sys.getenv(
 ))
 base_seed <- 20260712L
 
-repo_root <- normalizePath(
-  Sys.getenv("ENRICHMENT_BOP2_ROOT", unset = getwd()),
-  mustWork = FALSE
-)
-result_dir <- file.path(repo_root, "results", "supplement")
+project_dir <- path.expand(Sys.getenv(
+  "ENRICHMENT_BOP2_ROOT",
+  unset = normalizePath(getwd(), mustWork = TRUE)
+))
+result_dir <- file.path(project_dir, "results", "supplement")
+
+if (!dir.exists(file.path(project_dir, "R"))) {
+  stop(
+    "Repository root was not found: ", project_dir,
+    "\nRun this analysis from the repository root or set ENRICHMENT_BOP2_ROOT."
+  )
+}
 dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
 
 detected_cores <- parallel::detectCores(logical = FALSE)
@@ -64,12 +83,18 @@ if (quick_test) {
   dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
 }
 
+table_dir <- file.path(project_dir, "tables", "supplement")
+if (quick_test) {
+  table_dir <- file.path(table_dir, "quick_test")
+}
+dir.create(table_dir, recursive = TRUE, showWarnings = FALSE)
+
 stopifnot(
   length(interim_n) == 2L,
   all(diff(interim_n) > 0L),
-  max(interim_n) < N_A,
-  N_A == N_pos,
-  n_pos_min <= min(interim_n),
+  max(interim_n) < min(N_A, N_pos),
+  n_pos_min > 0L,
+  n_pos_min < N_pos,
   all(post_enrichment_n < N_pos),
   all(dirichlet_prior > 0),
   abs(sum(dirichlet_prior) - 1) < 1e-12,
@@ -88,7 +113,9 @@ message(
   }
 )
 
-# Complex-endpoint global-null settings
+## -----------------------------------------------------------------------------
+## 2. Complex-endpoint global-null settings
+## -----------------------------------------------------------------------------
 
 endpoint_settings <- list(
   nested = list(
@@ -134,7 +161,9 @@ for (setting in endpoint_settings) {
   }
 }
 
-# Utility functions
+## -----------------------------------------------------------------------------
+## 3. Utility functions
+## -----------------------------------------------------------------------------
 
 parallel_lapply <- function(X, FUN, ..., mc_cores = n_cores) {
   if (mc_cores > 1L && .Platform$OS.type != "windows") {
@@ -261,6 +290,7 @@ posterior_stop_score <- function(counts, endpoint_id) {
   a <- dirichlet_prior
 
   if (endpoint_id == "nested") {
+    # Categories: CR, PR, SD, PD.
     shape_cr_1 <- a[1L] + counts[, 1L]
     shape_cr_2 <- sum(a[-1L]) + n - counts[, 1L]
     p_cr_futile <- pbeta(
@@ -274,10 +304,14 @@ posterior_stop_score <- function(counts, endpoint_id) {
       0.30, shape1 = shape_crpr_1, shape2 = shape_crpr_2
     )
 
+    # Stop only if both posterior probabilities exceed C(s).
     return(pmin(p_cr_futile, p_crpr_futile))
   }
 
   if (endpoint_id == "coprimary") {
+    # Categories:
+    # 1=(OR,EFS6), 2=(OR,no EFS6),
+    # 3=(no OR,EFS6), 4=(no OR,no EFS6).
     or_count <- counts[, 1L] + counts[, 2L]
     efs_count <- counts[, 1L] + counts[, 3L]
 
@@ -292,10 +326,14 @@ posterior_stop_score <- function(counts, endpoint_id) {
       shape2 = a[2L] + a[4L] + n - efs_count
     )
 
+    # Stop only if both posterior probabilities exceed C(s).
     return(pmin(p_or_futile, p_efs_futile))
   }
 
   if (endpoint_id == "efficacy_toxicity") {
+    # Categories:
+    # 1=(toxicity,OR), 2=(no toxicity,OR),
+    # 3=(toxicity,no OR), 4=(no toxicity,no OR).
     response_count <- counts[, 1L] + counts[, 2L]
     toxicity_count <- counts[, 1L] + counts[, 3L]
 
@@ -311,6 +349,7 @@ posterior_stop_score <- function(counts, endpoint_id) {
       lower.tail = FALSE
     )
 
+    # Stop if either posterior probability exceeds C(s).
     return(pmax(p_eff_futile, p_tox_excessive))
   }
 
@@ -417,19 +456,36 @@ build_positive_success_matrix <- function(
     stop("entry_look must be 1 or 2.")
   }
 
-  score_entry <- posterior_stop_score(
-    entry_counts, data$endpoint_id
+  # Under the bridging rule, every all-comer futility trajectory reaches a
+  # first biomarker-positive assessment. When entry_n is below n_pos_min,
+  # positive-only enrollment continues until n_pos_min before that assessment.
+  first_n <- pmax(entry_n, n_pos_min)
+  first_counts <- positive_counts_at_target(
+    entry_counts = entry_counts,
+    entry_n = entry_n,
+    target_n = first_n,
+    extra_cumulative = data$extra_cumulative
   )
-  C_entry <- 1 - outer(
-    (entry_n / N_pos)^gamma_pos,
+  if (any(rowSums(first_counts) != first_n)) {
+    stop("First biomarker-positive assessment counts are inconsistent.")
+  }
+
+  score_first <- posterior_stop_score(
+    first_counts, data$endpoint_id
+  )
+  C_first <- 1 - outer(
+    (first_n / N_pos)^gamma_pos,
     lambdas
   )
+  success <- outer(
+    score_first, rep(1, length(lambdas))
+  ) <= C_first
 
-  success <- outer(entry_n >= n_pos_min, rep(TRUE, length(lambdas))) &
-    (outer(score_entry, rep(1, length(lambdas))) <= C_entry)
-
+  # Apply only scheduled analyses that occur strictly after the first
+  # assessment. If the first assessment occurs at 20 or 30, it also serves as
+  # that scheduled analysis and is not repeated.
   for (look in post_enrichment_n) {
-    required <- entry_n < look
+    required <- first_n < look
     if (!any(required)) {
       next
     }
@@ -529,24 +585,26 @@ select_proposed_pair <- function(calibration) {
     )
   }
 
-  # No alternative configuration is used in this supplementary type I error
-  # demonstration. Select the feasible candidate with the largest estimated
-  # maximum global type I error, then use the minimum and mean values as ties.
-  score1 <- calibration$max_global_estimate
   best <- which(feasible)
   tol <- 1e-12
 
-  target <- max(score1[best])
-  best <- best[abs(score1[best] - target) <= tol]
+  # With no alternative scenarios in this supplemental demonstration, select
+  # the least conservative globally feasible design by the largest average
+  # estimated PRN-any over the prespecified prevalence values. Apply the
+  # prespecified minimum-then-maximum tie breakers only after that criterion.
+  target <- max(calibration$mean_global_estimate[best])
+  best <- best[
+    abs(calibration$mean_global_estimate[best] - target) <= tol
+  ]
 
   target <- max(calibration$min_global_estimate[best])
   best <- best[
     abs(calibration$min_global_estimate[best] - target) <= tol
   ]
 
-  target <- max(calibration$mean_global_estimate[best])
+  target <- max(calibration$max_global_estimate[best])
   best <- best[
-    abs(calibration$mean_global_estimate[best] - target) <= tol
+    abs(calibration$max_global_estimate[best] - target) <= tol
   ]
 
   ij <- arrayInd(best[1L], dim(calibration$max_global_estimate))
@@ -843,7 +901,9 @@ validate_endpoint <- function(calibration_result) {
   do.call(rbind, rows)
 }
 
-# Calibration and independent validation
+## -----------------------------------------------------------------------------
+## 4. Calibration and independent validation
+## -----------------------------------------------------------------------------
 
 endpoint_jobs <- Map(
   function(setting, number) {
@@ -912,7 +972,9 @@ type1_summary <- type1_summary[
   drop = FALSE
 ]
 
-# Output files
+## -----------------------------------------------------------------------------
+## 5. Output files
+## -----------------------------------------------------------------------------
 
 scenario_rows <- lapply(endpoint_settings, function(setting) {
   data.frame(
@@ -934,7 +996,7 @@ settings_table <- data.frame(
     "post-enrichment positive looks",
     "N_A",
     "N_positive",
-    "n_positive_min",
+    "n_positive_min for first assessment",
     "prevalence grid",
     "Dirichlet prior",
     "gamma_A",
@@ -942,7 +1004,7 @@ settings_table <- data.frame(
     "lambda grid",
     "calibration replicates",
     "independent validation replicates",
-    "calibration confidence bound",
+    "calibration feasibility criterion",
     "base seed",
     "parallel workers"
   ),
@@ -968,7 +1030,7 @@ settings_table <- data.frame(
     ),
     n_calibration,
     n_validation,
-    "One-sided 95% Wilson upper bound",
+    "Maximum one-sided 95% Wilson upper bound over prevalence <= alpha",
     base_seed,
     n_cores
   ),
@@ -1026,6 +1088,109 @@ xlsx_created <- write_results_workbook(
   path = xlsx_path
 )
 
+## -----------------------------------------------------------------------------
+## 6. LaTeX table
+## -----------------------------------------------------------------------------
+
+fmt_prob <- function(x) {
+  formatC(100 * x, format = "f", digits = 1L)
+}
+fmt_pi <- function(x) {
+  formatC(x, format = "f", digits = 1L)
+}
+
+table_rows <- character()
+for (endpoint_name in unique(type1_results$Endpoint)) {
+  sub_endpoint <- type1_results[
+    type1_results$Endpoint == endpoint_name,
+    ,
+    drop = FALSE
+  ]
+  for (pi_value in prevalence_grid) {
+    proposed <- sub_endpoint[
+      sub_endpoint$Method == "Globally calibrated" &
+        abs(sub_endpoint$pi - pi_value) < 1e-12,
+      ,
+      drop = FALSE
+    ]
+    componentwise <- sub_endpoint[
+      sub_endpoint$Method == "Componentwise calibrated" &
+        abs(sub_endpoint$pi - pi_value) < 1e-12,
+      ,
+      drop = FALSE
+    ]
+
+    endpoint_cell <- if (pi_value == prevalence_grid[1L]) {
+      endpoint_name
+    } else {
+      ""
+    }
+
+    table_rows <- c(
+      table_rows,
+      paste0(
+        endpoint_cell, " & ", fmt_pi(pi_value),
+        " & \\textbf{", fmt_prob(proposed$PRN_any), "}",
+        " & ", fmt_prob(proposed$PRN_all),
+        " & ", fmt_prob(proposed$PRN_positive),
+        " & \\textbf{", fmt_prob(componentwise$PRN_any), "}",
+        " & ", fmt_prob(componentwise$PRN_all),
+        " & ", fmt_prob(componentwise$PRN_positive),
+        " \\\\"
+      )
+    )
+  }
+  table_rows <- c(table_rows, "\\addlinespace")
+}
+table_rows <- table_rows[-length(table_rows)]
+
+latex_lines <- c(
+  "\\begin{table}[htbp]",
+  "\\centering",
+  paste0(
+    "\\caption{Simulation-based global and component-specific type I ",
+    "error rates for complex categorical endpoints.}"
+  ),
+  "\\label{tab:complex_endpoint_type1}",
+  "\\small",
+  "\\resizebox{\\textwidth}{!}{%",
+  "\\begin{tabular}{lcrrrrrr}",
+  "\\toprule",
+  paste0(
+    "Endpoint & $\\pi$ & \\multicolumn{3}{c}{Proposed} & ",
+    "\\multicolumn{3}{c}{Componentwise} \\\\"
+  ),
+  paste0(
+    " & & \\textbf{PRN-any} & PRN-all & PRN-positive & ",
+    "\\textbf{PRN-any} & PRN-all & PRN-positive \\\\"
+  ),
+  "\\midrule",
+  table_rows,
+  "\\bottomrule",
+  "\\end{tabular}",
+  "}",
+  "\\begin{minipage}{0.98\\textwidth}",
+  "\\footnotesize",
+  paste0(
+    "Values are percentages based on ", format(n_validation, big.mark = ","),
+    " independent validation replicates per endpoint, method, and prevalence. ",
+    "Boldface indicates PRN-any, the primary global type I error measure. ",
+    "The proposed design is calibrated using the probability of an efficacy ",
+    "claim in either population, whereas the componentwise design calibrates ",
+    "the all-comer and biomarker-positive claim probabilities separately."
+  ),
+  "\\end{minipage}",
+  "\\end{table}"
+)
+
+writeLines(
+  latex_lines,
+  file.path(
+    table_dir, "table_complex_endpoint_type1_simulation.tex"
+  ),
+  useBytes = TRUE
+)
+
 capture.output(
   sessionInfo(),
   file = file.path(result_dir, "sessionInfo.txt")
@@ -1035,9 +1200,19 @@ message("Selected designs:")
 print(selected_designs)
 message("Independent validation summary:")
 print(type1_summary)
+
 message(
   "Completed. Results were written to: ",
   normalizePath(result_dir, mustWork = FALSE)
+)
+message(
+  "LaTeX table: ",
+  normalizePath(
+    file.path(
+      table_dir, "table_complex_endpoint_type1_simulation.tex"
+    ),
+    mustWork = FALSE
+  )
 )
 if (xlsx_created) {
   message(

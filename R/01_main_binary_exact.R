@@ -1,15 +1,23 @@
-# Binary-endpoint analysis for the main manuscript.
-# Uses exact recursive enumeration and relative repository paths.
+# Globally calibrated enrichment BOP2 design
+# Exact calibration and exact operating characteristics for the globally
+# calibrated enrichment BOP2 design with post-enrichment biomarker-positive
+# monitoring. No Monte Carlo simulation is performed. Computationally
+# intensive exact-enumeration steps are parallelized on macOS/Linux.
+#
+# The core analysis uses base R. CSV files are always produced. A consolidated
+# XLSX workbook is also produced when either the 'writexl' or 'openxlsx' package
+# is installed. Set environment variable BOP2_QUICK=1 for a short code check.
 
+rm(list = ls())
 options(stringsAsFactors = FALSE)
 
-# User settings
+## -----------------------------------------------------------------------------
+## 1. User settings
+## -----------------------------------------------------------------------------
 
 p0 <- 0.20
 p1 <- 0.40
 alpha <- 0.10
-alpha_lower <- 0.09
-
 interim_n <- c(20L, 30L)
 N_A <- 40L
 N_pos <- 40L
@@ -26,18 +34,40 @@ theta_neg_grid <- c(p0, p0 - 0.10)
 lambda_grid <- seq(0.005, 1.000, by = 0.005)
 
 # gamma is a positive shape parameter rather than a probability and therefore
-# need not be bounded by one. Values above one allow the cutoff to remain
-# relatively close to one early in the trial and decrease more sharply later.
-# The upper limit of eight is a numerical search bound.
+# need not be bounded by one. Values above one allow a cutoff that remains
+# relatively close to one early in the trial and decreases more sharply later.
+# The upper limit of eight is a numerical search bound; a warning is issued
+# below if the selected design reaches this limit.
 gamma_grid <- seq(0.050, 8.000, by = 0.050)
 
-repo_root <- normalizePath(
-  Sys.getenv("ENRICHMENT_BOP2_ROOT", unset = getwd()),
-  mustWork = FALSE
-)
-result_root <- file.path(repo_root, "results", "main")
+# Repository root and output directory. run_main.R and run_all.R set
+# ENRICHMENT_BOP2_ROOT automatically. Direct execution from the repository root
+# is also supported.
+project_dir <- path.expand(Sys.getenv(
+  "ENRICHMENT_BOP2_ROOT",
+  unset = normalizePath(getwd(), mustWork = TRUE)
+))
+result_root <- file.path(project_dir, "results", "main")
+
+if (!dir.exists(file.path(project_dir, "R"))) {
+  stop(
+    "Repository root was not found: ", project_dir,
+    "\nRun this analysis from the repository root or set ENRICHMENT_BOP2_ROOT."
+  )
+}
 dir.create(result_root, recursive = TRUE, showWarnings = FALSE)
 
+# Parallel processing is used for the two computationally intensive,
+# embarrassingly parallel steps: construction of biomarker-positive kernels
+# across candidate boundaries and construction of all-comer state spaces across
+# operating-characteristic scenarios. On macOS/Linux, forked workers are used.
+# Windows falls back to sequential execution because this program is intended
+# primarily for the specified macOS project environment.
+#
+# By default, use one fewer than the number of detected physical cores, capped
+# at 8 to limit memory use. Override this choice, for example with 10 workers,
+# before starting R by setting:
+#   Sys.setenv(BOP2_N_CORES = 10)
 detected_cores <- parallel::detectCores(logical = FALSE)
 if (is.na(detected_cores) || detected_cores < 1L) {
   detected_cores <- parallel::detectCores(logical = TRUE)
@@ -80,6 +110,8 @@ message(
   "; backend = ", parallel_backend
 )
 
+# Remove legacy Monte Carlo outputs so that old files are not mistaken for
+# results from the current exact-only analysis.
 legacy_output_files <- c(
   "monte_carlo_operating_characteristics.csv",
   "exact_vs_monte_carlo.csv",
@@ -89,14 +121,12 @@ legacy_output_files <- c(
 unlink(file.path(output_dir, legacy_output_files), force = TRUE)
 
 stopifnot(
-  alpha_lower >= 0,
-  alpha_lower <= alpha,
   length(interim_n) == 2L,
   all(interim_n > 0L),
   all(diff(interim_n) > 0L),
-  max(interim_n) < N_A,
-  N_A == N_pos,
-  n_pos_min <= min(interim_n),
+  max(interim_n) < min(N_A, N_pos),
+  n_pos_min > 0L,
+  n_pos_min < N_pos,
   all(post_enrichment_n > 0L),
   all(diff(post_enrichment_n) > 0L),
   all(post_enrichment_n < N_pos),
@@ -104,7 +134,9 @@ stopifnot(
   all(theta_neg_grid >= 0 & theta_neg_grid <= 1)
 )
 
-# Utility functions
+## -----------------------------------------------------------------------------
+## 2. Utility functions
+## -----------------------------------------------------------------------------
 
 parallel_lapply <- function(X, FUN, ..., n_workers = n_cores) {
   n_workers <- max(1L, min(as.integer(n_workers), length(X)))
@@ -126,6 +158,9 @@ parallel_lapply <- function(X, FUN, ..., n_workers = n_cores) {
 }
 
 write_results_workbook <- function(sheets, path) {
+  # CSV files are the primary reproducible outputs. This helper additionally
+  # combines the main results into one XLSX workbook when a supported package
+  # is available. It never installs packages automatically.
   sheets <- lapply(sheets, function(x) {
     x <- as.data.frame(x, stringsAsFactors = FALSE)
     rownames(x) <- NULL
@@ -158,6 +193,7 @@ write_results_workbook <- function(sheets, path) {
 }
 
 prob_binom_greater <- function(cutoff, size, prob) {
+  # P{Binomial(size, prob) > cutoff}; vectorized in cutoff.
   out <- numeric(length(cutoff))
   out[cutoff < 0] <- 1
   out[cutoff >= size] <- 0
@@ -205,6 +241,8 @@ make_boundary_candidates <- function(sample_sizes, max_sample_size,
                        shape2 = prior_b + s - x)
     cutoffs <- 1 - grid$lambda * (s / max_sample_size)^grid$gamma
 
+    # The posterior probability decreases monotonically with x, so the number
+    # of values exceeding the cutoff minus one is the integer futility boundary.
     boundary_matrix[, j] <- vapply(
       cutoffs,
       function(cc) as.integer(sum(post_prob > cc) - 1L),
@@ -228,6 +266,7 @@ make_boundary_candidates <- function(sample_sizes, max_sample_size,
 }
 
 make_joint_distribution <- function(n, pi, theta_pos, theta_neg) {
+  # Distribution of (n_pos, x_pos, x_neg) after n all-comer patients.
   rows <- vector("list", (n + 1L) * (n + 2L) * (n + 3L) / 6L)
   idx <- 1L
   for (n_pos in 0:n) {
@@ -256,6 +295,7 @@ make_joint_distribution <- function(n, pi, theta_pos, theta_neg) {
 }
 
 convolve_distributions <- function(dist1, dist2, total_n) {
+  # Convolution of two independent distributions of (n_pos, x_pos, x_neg).
   dim1 <- total_n + 1L
   dim2 <- total_n + 1L
   out_prob <- numeric(dim1 * dim2 * dim2)
@@ -265,6 +305,7 @@ convolve_distributions <- function(dist1, dist2, total_n) {
     x_pos <- dist1$x_pos[i] + dist2$x_pos
     x_neg <- dist1$x_neg[i] + dist2$x_neg
 
+    # R arrays are column-major. All indices below are zero-based before +1.
     linear_index <- (n_pos + 1L) +
       dim1 * x_pos +
       dim1 * dim2 * x_neg
@@ -291,6 +332,7 @@ convolve_distributions <- function(dist1, dist2, total_n) {
 }
 
 state_id <- function(n_pos, x_pos) {
+  # Unique ID for 0 <= x_pos <= n_pos <= 30.
   as.integer(n_pos * (n_pos + 1L) / 2L + x_pos + 1L)
 }
 
@@ -415,22 +457,28 @@ make_positive_boundary_vector <- function(P_candidates, P_index) {
   bP
 }
 
-compute_positive_path_candidate <- function(bP, theta_pos, enter_vector) {
+compute_positive_branch_candidate <- function(bP, theta_pos) {
+  # For every state at which the all-comer futility boundary is crossed,
+  # calculate the complete biomarker-positive-only branch. When fewer than
+  # n_pos_min biomarker-positive patients are available, the calculation first
+  # bridges to n_pos_min and performs the initial subgroup assessment there.
   n_states <- nrow(positive_states)
-  success <- numeric(n_states)
-  final_no_claim <- numeric(n_states)
-  stop20 <- numeric(n_states)
-  stop30 <- numeric(n_states)
-  expected_additional <- numeric(n_states)
-  reach20 <- numeric(n_states)
-  reach30 <- numeric(n_states)
+  metric_names <- c(
+    "success", "final_no_claim", "initial_futility", "enter",
+    "stop20", "stop30", "expected_additional",
+    "analyzed20", "analyzed30", "bridged"
+  )
+  out_mat <- matrix(
+    0, nrow = n_states, ncol = length(metric_names),
+    dimnames = list(NULL, metric_names)
+  )
 
-  memo <- new.env(hash = TRUE, parent = emptyenv())
+  active_memo <- new.env(hash = TRUE, parent = emptyenv())
 
-  recurse <- function(n_current, x_current) {
+  recurse_active <- function(n_current, x_current) {
     key <- paste0(n_current, ":", x_current)
-    if (exists(key, envir = memo, inherits = FALSE)) {
-      return(get(key, envir = memo, inherits = FALSE))
+    if (exists(key, envir = active_memo, inherits = FALSE)) {
+      return(get(key, envir = active_memo, inherits = FALSE))
     }
 
     future_looks <- c(
@@ -443,123 +491,149 @@ compute_positive_path_candidate <- function(bP, theta_pos, enter_vector) {
     prob_u <- dbinom(u, size = increment, prob = theta_pos)
     x_next <- x_current + u
 
-    out <- c(
+    ans <- c(
       success = 0,
       final_no_claim = 0,
       stop20 = 0,
       stop30 = 0,
       expected_additional = increment,
-      reach20 = 0,
-      reach30 = 0
+      analyzed20 = 0,
+      analyzed30 = 0
     )
 
     if (next_look == N_pos) {
       claim <- x_next > bP[N_pos + 1L]
-      out["success"] <- sum(prob_u[claim])
-      out["final_no_claim"] <- sum(prob_u[!claim])
+      ans["success"] <- sum(prob_u[claim])
+      ans["final_no_claim"] <- sum(prob_u[!claim])
     } else {
       pass <- x_next > bP[next_look + 1L]
       if (next_look == 20L) {
-        out["reach20"] <- 1
-        out["stop20"] <- sum(prob_u[!pass])
+        ans["analyzed20"] <- 1
+        ans["stop20"] <- sum(prob_u[!pass])
       }
       if (next_look == 30L) {
-        out["reach30"] <- 1
-        out["stop30"] <- sum(prob_u[!pass])
+        ans["analyzed30"] <- 1
+        ans["stop30"] <- sum(prob_u[!pass])
       }
 
       pass_index <- which(pass)
       if (length(pass_index) > 0L) {
         for (k in pass_index) {
-          child <- recurse(next_look, x_next[k])
+          child <- recurse_active(next_look, x_next[k])
           weight <- prob_u[k]
-          out["success"] <- out["success"] + weight * child["success"]
-          out["final_no_claim"] <- out["final_no_claim"] +
+          ans["success"] <- ans["success"] + weight * child["success"]
+          ans["final_no_claim"] <- ans["final_no_claim"] +
             weight * child["final_no_claim"]
-          out["stop20"] <- out["stop20"] + weight * child["stop20"]
-          out["stop30"] <- out["stop30"] + weight * child["stop30"]
-          out["expected_additional"] <- out["expected_additional"] +
+          ans["stop20"] <- ans["stop20"] + weight * child["stop20"]
+          ans["stop30"] <- ans["stop30"] + weight * child["stop30"]
+          ans["expected_additional"] <- ans["expected_additional"] +
             weight * child["expected_additional"]
-          out["reach20"] <- out["reach20"] + weight * child["reach20"]
-          out["reach30"] <- out["reach30"] + weight * child["reach30"]
+          ans["analyzed20"] <- ans["analyzed20"] +
+            weight * child["analyzed20"]
+          ans["analyzed30"] <- ans["analyzed30"] +
+            weight * child["analyzed30"]
         }
       }
     }
 
-    assign(key, out, envir = memo)
-    out
+    partition <- ans["success"] + ans["final_no_claim"] +
+      ans["stop20"] + ans["stop30"]
+    if (abs(partition - 1) > 1e-10) {
+      stop("Active biomarker-positive path probabilities do not sum to one.")
+    }
+
+    assign(key, ans, envir = active_memo)
+    ans
   }
 
-  entered_states <- which(enter_vector > 0)
-  for (r in entered_states) {
-    ans <- recurse(positive_states$n_pos[r], positive_states$x_pos[r])
-    success[r] <- ans["success"]
-    final_no_claim[r] <- ans["final_no_claim"]
-    stop20[r] <- ans["stop20"]
-    stop30[r] <- ans["stop30"]
-    expected_additional[r] <- ans["expected_additional"]
-    reach20[r] <- ans["reach20"]
-    reach30[r] <- ans["reach30"]
-  }
+  for (r in seq_len(n_states)) {
+    m <- positive_states$n_pos[r]
+    x <- positive_states$x_pos[r]
 
-  if (length(entered_states) > 0L) {
-    total <- success + final_no_claim + stop20 + stop30
-    if (max(abs(total[entered_states] - 1)) > 1e-10) {
-      stop("Biomarker-positive path probabilities do not sum to one.")
+    if (m < n_pos_min) {
+      d0 <- n_pos_min - m
+      u0 <- 0:d0
+      prob0 <- dbinom(u0, size = d0, prob = theta_pos)
+      x0 <- x + u0
+      pass0 <- x0 > bP[n_pos_min + 1L]
+
+      out_mat[r, "bridged"] <- 1
+      out_mat[r, "initial_futility"] <- sum(prob0[!pass0])
+      out_mat[r, "enter"] <- sum(prob0[pass0])
+      out_mat[r, "expected_additional"] <- d0
+
+      pass_index <- which(pass0)
+      if (length(pass_index) > 0L) {
+        for (k in pass_index) {
+          child <- recurse_active(n_pos_min, x0[k])
+          weight <- prob0[k]
+          for (nm in c(
+            "success", "final_no_claim", "stop20", "stop30",
+            "analyzed20", "analyzed30"
+          )) {
+            out_mat[r, nm] <- out_mat[r, nm] + weight * child[nm]
+          }
+          out_mat[r, "expected_additional"] <-
+            out_mat[r, "expected_additional"] +
+            weight * child["expected_additional"]
+        }
+      }
+    } else {
+      pass0 <- x > bP[m + 1L]
+      out_mat[r, "initial_futility"] <- as.numeric(!pass0)
+      out_mat[r, "enter"] <- as.numeric(pass0)
+
+      # When the first assessment itself occurs at a scheduled sample size, it
+      # counts as that analysis and is not repeated later.
+      if (m == 20L) out_mat[r, "analyzed20"] <- 1
+      if (m == 30L) out_mat[r, "analyzed30"] <- 1
+
+      if (pass0) {
+        child <- recurse_active(m, x)
+        for (nm in c(
+          "success", "final_no_claim", "stop20", "stop30",
+          "analyzed20", "analyzed30"
+        )) {
+          out_mat[r, nm] <- out_mat[r, nm] + child[nm]
+        }
+        out_mat[r, "expected_additional"] <- child["expected_additional"]
+      }
     }
   }
 
-  list(
-    success = success,
-    final_no_claim = final_no_claim,
-    stop20 = stop20,
-    stop30 = stop30,
-    expected_additional = expected_additional,
-    reach20 = reach20,
-    reach30 = reach30
-  )
+  initial_partition <- out_mat[, "initial_futility"] + out_mat[, "enter"]
+  if (max(abs(initial_partition - 1)) > 1e-10) {
+    stop("Initial biomarker-positive assessment probabilities do not sum to one.")
+  }
+  terminal_partition <- out_mat[, "success"] +
+    out_mat[, "final_no_claim"] + out_mat[, "initial_futility"] +
+    out_mat[, "stop20"] + out_mat[, "stop30"]
+  if (max(abs(terminal_partition - 1)) > 1e-10) {
+    stop("Biomarker-positive branch probabilities do not sum to one.")
+  }
+  if (any(out_mat[, "stop20"] - out_mat[, "analyzed20"] > 1e-10) ||
+      any(out_mat[, "stop30"] - out_mat[, "analyzed30"] > 1e-10)) {
+    stop("A stopping probability exceeds its corresponding analysis probability.")
+  }
+
+  as.data.frame(out_mat, stringsAsFactors = FALSE)
 }
 
 make_positive_kernels <- function(P_candidates, theta_pos_values) {
-  boundary_columns <- paste0("b_", P_sample_sizes)
-  B <- as.matrix(P_candidates[, boundary_columns, drop = FALSE])
   nP <- nrow(P_candidates)
-
-  boundary_by_state <- matrix(Inf, nrow = n_positive_states, ncol = nP)
-  assessed <- positive_states$n_pos >= n_pos_min
-  for (n in n_pos_min:max_interim_pos) {
-    state_rows <- which(positive_states$n_pos == n)
-    boundary_col <- match(paste0("b_", n), boundary_columns)
-    boundary_by_state[state_rows, ] <- matrix(
-      B[, boundary_col],
-      nrow = length(state_rows),
-      ncol = nP,
-      byrow = TRUE
-    )
-  }
-
-  x_matrix <- matrix(
-    positive_states$x_pos,
-    nrow = n_positive_states,
-    ncol = nP
-  )
-  enter <- assessed & (x_matrix > boundary_by_state)
-  positive_futility_initial <- assessed & !enter
-
   success <- vector("list", length(theta_pos_values))
   names(success) <- format(theta_pos_values, trim = TRUE)
 
   for (theta_pos in theta_pos_values) {
-    message("  constructing positive-path success kernels for theta_pos = ",
+    message("  constructing positive-branch success kernels for theta_pos = ",
             theta_pos)
     candidate_results <- parallel_lapply(
       seq_len(nP),
       function(p_idx) {
         bP <- make_positive_boundary_vector(P_candidates, p_idx)
-        compute_positive_path_candidate(
+        compute_positive_branch_candidate(
           bP = bP,
-          theta_pos = theta_pos,
-          enter_vector = enter[, p_idx]
+          theta_pos = theta_pos
         )$success
       },
       n_workers = n_cores
@@ -571,8 +645,6 @@ make_positive_kernels <- function(P_candidates, theta_pos_values) {
   }
 
   list(
-    enter = enter * 1,
-    positive_futility_initial = positive_futility_initial * 1,
     success = success,
     sample_sizes = P_sample_sizes
   )
@@ -580,15 +652,13 @@ make_positive_kernels <- function(P_candidates, theta_pos_values) {
 
 positive_detail_cache <- new.env(hash = TRUE, parent = emptyenv())
 
-get_positive_detail <- function(P_candidates, positive_kernels,
-                                P_index, theta_pos) {
+get_positive_detail <- function(P_candidates, P_index, theta_pos) {
   key <- paste(P_index, format(theta_pos, digits = 17), sep = ":")
   if (!exists(key, envir = positive_detail_cache, inherits = FALSE)) {
     bP <- make_positive_boundary_vector(P_candidates, P_index)
-    detail <- compute_positive_path_candidate(
+    detail <- compute_positive_branch_candidate(
       bP = bP,
-      theta_pos = theta_pos,
-      enter_vector = positive_kernels$enter[, P_index]
+      theta_pos = theta_pos
     )
     assign(key, detail, envir = positive_detail_cache)
   }
@@ -624,12 +694,8 @@ exact_metrics_selected <- function(component, positive_kernels,
 
   theta_key <- format(scenario$theta_pos, trim = TRUE)
   success_vector <- positive_kernels$success[[theta_key]][, P_index]
-  enter_vector <- positive_kernels$enter[, P_index]
-  initial_futility_vector <-
-    positive_kernels$positive_futility_initial[, P_index]
   detail <- get_positive_detail(
     P_candidates = P_candidates,
-    positive_kernels = positive_kernels,
     P_index = P_index,
     theta_pos = scenario$theta_pos
   )
@@ -637,29 +703,35 @@ exact_metrics_selected <- function(component, positive_kernels,
     stop("Cached and detailed biomarker-positive success probabilities differ.")
   }
 
-  low_state <- positive_states$n_pos < n_pos_min
-  assessed_state <- !low_state
   n_state <- positive_states$n_pos
-
   prn_all <- component$prn_all[A_index]
-  prn_positive <- sum(w * success_vector)
-  pet_low <- sum(w[low_state])
-  pet_positive_initial <- sum(w * initial_futility_vector)
+  prn_positive <- sum(w * detail$success)
+
+  first_assessment <- sum(w)
+  bridged <- sum(w * detail$bridged)
+  pet_positive_initial <- sum(w * detail$initial_futility)
+  enter <- sum(w * detail$enter)
   pet_positive_look20 <- sum(w * detail$stop20)
   pet_positive_look30 <- sum(w * detail$stop30)
   pet_positive <- pet_positive_initial + pet_positive_look20 +
     pet_positive_look30
-  enter <- sum(w * enter_vector)
+  analyzed20 <- sum(w * detail$analyzed20)
+  analyzed30 <- sum(w * detail$analyzed30)
 
-  if (abs(pet_low + pet_positive_initial + enter - sum(w)) > 1e-9) {
-    stop("Initial enrichment-path probabilities do not sum correctly.")
+  if (abs(first_assessment - pet_positive_initial - enter) > 1e-9) {
+    stop("First biomarker-positive assessment probabilities do not sum correctly.")
   }
-  post_partition <- sum(
+  terminal_partition <- sum(
     w * (detail$success + detail$final_no_claim +
-           detail$stop20 + detail$stop30)
+           detail$initial_futility + detail$stop20 + detail$stop30)
   )
-  if (abs(post_partition - enter) > 1e-9) {
-    stop("Post-enrichment path probabilities do not sum correctly.")
+  if (abs(terminal_partition - first_assessment) > 1e-9) {
+    stop("Biomarker-positive branch terminal probabilities do not sum correctly.")
+  }
+  if (bridged - first_assessment > 1e-9 ||
+      pet_positive_look20 - analyzed20 > 1e-9 ||
+      pet_positive_look30 - analyzed30 > 1e-9) {
+    stop("Detailed biomarker-positive path metrics are internally inconsistent.")
   }
 
   mean_total_sample_size <-
@@ -677,19 +749,19 @@ exact_metrics_selected <- function(component, positive_kernels,
     PRN_any = prn_all + prn_positive,
     PRN_all = prn_all,
     PRN_positive = prn_positive,
-    PET_any = pet_low + pet_positive,
-    PET_all = sum(w),
+    PET_any = pet_positive,
     PET_positive = pet_positive,
+    Allcomer_futility = first_assessment,
+    First_positive_assessment = first_assessment,
+    Bridge_to_minimum = bridged,
     PET_positive_initial = pet_positive_initial,
-    PET_positive_look20 = pet_positive_look20,
-    PET_positive_look30 = pet_positive_look30,
-    PET_low_biomarker_count = pet_low,
-    Reassess_positive = sum(w[assessed_state]),
     Enter_enrichment = enter,
-    Enter_enrichment_look1 = sum(w1 * enter_vector),
-    Enter_enrichment_look2 = sum(w2 * enter_vector),
-    Reach_positive_look20 = sum(w * detail$reach20),
-    Reach_positive_look30 = sum(w * detail$reach30),
+    Enter_enrichment_look1 = sum(w1 * detail$enter),
+    Enter_enrichment_look2 = sum(w2 * detail$enter),
+    Analyzed_positive_look20 = analyzed20,
+    PET_positive_look20 = pet_positive_look20,
+    Analyzed_positive_look30 = analyzed30,
+    PET_positive_look30 = pet_positive_look30,
     Mean_total_sample_size = mean_total_sample_size,
     Mean_positive_sample_size = mean_positive_sample_size
   )
@@ -725,7 +797,9 @@ select_candidate_pair <- function(feasible, avg_power, min_power,
   )
 }
 
-# Candidate boundary tables
+## -----------------------------------------------------------------------------
+## 3. Candidate boundary tables
+## -----------------------------------------------------------------------------
 
 message("Generating unique all-comer boundary candidates...")
 A_sample_sizes <- c(interim_n, N_A)
@@ -775,7 +849,9 @@ write.csv(
   row.names = FALSE
 )
 
-# Scenarios and exact path components
+## -----------------------------------------------------------------------------
+## 4. Scenarios and exact path components
+## -----------------------------------------------------------------------------
 
 null_scenarios <- data.frame(
   scenario_type = "Null",
@@ -799,9 +875,10 @@ alternative_scenarios <- alternative_scenarios[
 ]
 alternative_scenarios$scenario_type <- "Alternative"
 
-# A single prespecified alternative configuration is used for calibration.
-# Other response configurations are used only to evaluate the operating
-# characteristics of the selected fixed design.
+# As in the original BOP2 optimization, one prespecified alternative
+# configuration is used to select the design. The remaining response
+# configurations are used only to evaluate the operating characteristics of
+# that fixed design and do not trigger recalibration.
 alternative_scenarios$used_for_calibration <-
   abs(alternative_scenarios$theta_pos - p1) < 1e-12 &
   abs(alternative_scenarios$theta_neg - p0) < 1e-12
@@ -848,7 +925,9 @@ components <- parallel_lapply(
   n_workers = n_cores
 )
 
-# Calibration of the proposed and comparator designs
+## -----------------------------------------------------------------------------
+## 5. Calibration of the proposed and comparator designs
+## -----------------------------------------------------------------------------
 
 nA <- nrow(A_candidates)
 nP <- nrow(P_candidates)
@@ -888,41 +967,18 @@ for (s_idx in seq_along(components)) {
 }
 
 feasible_global <- max_global_type1 <= alpha + 1e-12
-preferred_global <- feasible_global &
-  max_global_type1 >= alpha_lower - 1e-12
-use_alpha_lower_band <- any(preferred_global)
-global_selection_set <- if (use_alpha_lower_band) {
-  preferred_global
-} else {
-  feasible_global
-}
 
 feasible_componentwise <-
   matrix(max_all_type1 <= alpha + 1e-12, nrow = nA, ncol = nP) &
   max_positive_type1 <= alpha + 1e-12
 
-if (use_alpha_lower_band) {
-  message(
-    "Selecting the proposed design among candidates with exact maximum global ",
-    "type I error in [", alpha_lower, ", ", alpha, "]."
-  )
-} else {
-  warning(
-    "No proposed-design candidate had exact maximum global type I error in [",
-    alpha_lower, ", ", alpha, "]. Selection used all candidates not exceeding ",
-    alpha, "."
-  )
-}
-
 selected_global <- select_candidate_pair(
-  feasible = global_selection_set,
+  feasible = feasible_global,
   avg_power = avg_power,
   min_power = min_power,
   type1_metric = max_global_type1,
   label = "globally calibrated design"
 )
-selected_global$used_alpha_lower_band <- use_alpha_lower_band
-
 selected_componentwise <- select_candidate_pair(
   feasible = feasible_componentwise,
   avg_power = avg_power,
@@ -950,12 +1006,6 @@ make_selected_row <- function(method, selected) {
                                              selected$P_index],
     average_power = selected$average_power,
     minimum_power = selected$minimum_power,
-    alpha_lower = if (method == "Globally calibrated") alpha_lower else NA_real_,
-    selected_from_alpha_lower_band = if (method == "Globally calibrated") {
-      use_alpha_lower_band
-    } else {
-      NA
-    },
     stringsAsFactors = FALSE
   )
 }
@@ -973,7 +1023,6 @@ if (any(abs(selected_designs$gamma_A - max(gamma_grid)) < 1e-12) ||
     "is not constrained by the numerical bound."
   )
 }
-
 write.csv(selected_designs,
           file.path(output_dir, "selected_designs.csv"),
           row.names = FALSE)
@@ -982,8 +1031,7 @@ print(selected_designs)
 saveRDS(
   list(
     settings = list(
-      p0 = p0, p1 = p1, alpha = alpha, alpha_lower = alpha_lower,
-      calibration_alternative = c(theta_pos = p1, theta_neg = p0),
+      p0 = p0, p1 = p1, alpha = alpha,
       interim_n = interim_n, N_A = N_A, N_pos = N_pos,
       n_pos_min = n_pos_min, post_enrichment_n = post_enrichment_n,
       prior_a = prior_a, prior_b = prior_b,
@@ -1002,7 +1050,9 @@ saveRDS(
   file.path(output_dir, "calibration_objects.rds")
 )
 
-# Exact operating characteristics for selected designs
+## -----------------------------------------------------------------------------
+## 6. Exact operating characteristics for selected designs
+## -----------------------------------------------------------------------------
 
 selected_index <- list(
   "Globally calibrated" = c(selected_global$A_index,
@@ -1036,7 +1086,9 @@ write.csv(exact_results,
           file.path(output_dir, "exact_operating_characteristics.csv"),
           row.names = FALSE)
 
-# Table-I-style boundary table for the proposed design only
+## -----------------------------------------------------------------------------
+## 7. Table-I-style boundary table for the proposed design only
+## -----------------------------------------------------------------------------
 
 selected_A <- A_candidates[selected_global$A_index, ]
 selected_P <- P_candidates[selected_global$P_index, ]
@@ -1066,7 +1118,64 @@ write.csv(positive_boundary_table,
           file.path(output_dir, "proposed_boundary_table_positive.csv"),
           row.names = FALSE)
 
-# Exact result summaries and session information
+latex_vector <- function(x) paste(x, collapse = " & ")
+latex_boundary_vector <- function(x) {
+  paste(ifelse(x < 0L, "--", as.character(x)), collapse = " & ")
+}
+
+pos_block1 <- n_pos_min:20L
+pos_block2 <- c(21L:30L, N_pos)
+get_p_boundary <- function(samples) {
+  as.integer(unlist(selected_P[1L, paste0("b_", samples)], use.names = FALSE))
+}
+
+latex_lines <- c(
+  "\\begin{table}[htbp]",
+  "\\centering",
+  "\\caption{Decision boundaries of the proposed globally calibrated enrichment BOP2 design.}",
+  "\\label{tab:proposed_boundaries}",
+  "\\begin{tabular}{lccc}",
+  "\\hline",
+  paste0("All-comer sample size & ", latex_vector(A_sample_sizes), " \\\\"),
+  paste0("Futile if number of responses $\\le$ & ",
+         latex_boundary_vector(as.integer(unlist(selected_A[1L,
+           paste0("b_", A_sample_sizes)], use.names = FALSE))), " \\\\"),
+  "\\hline",
+  "\\end{tabular}",
+  "\\vspace{0.6em}",
+  "",
+  paste0("\\begin{tabular}{l", paste(rep("c", length(pos_block1)),
+                                       collapse = ""), "}"),
+  "\\hline",
+  paste0("Biomarker-positive sample size & ",
+         latex_vector(pos_block1), " \\\\"),
+  paste0("Futile if number of responses $\\le$ & ",
+         latex_boundary_vector(get_p_boundary(pos_block1)), " \\\\"),
+  "\\hline",
+  "\\end{tabular}",
+  "\\vspace{0.6em}",
+  "",
+  paste0("\\begin{tabular}{l", paste(rep("c", length(pos_block2)),
+                                       collapse = ""), "}"),
+  "\\hline",
+  paste0("Biomarker-positive sample size & ",
+         latex_vector(pos_block2), " \\\\"),
+  paste0("Futile if number of responses $\\le$ & ",
+         latex_boundary_vector(get_p_boundary(pos_block2)), " \\\\"),
+  "\\hline",
+  "\\end{tabular}",
+  "",
+  "\\begin{minipage}{0.95\\textwidth}",
+  "\\footnotesize The all-comer boundaries apply at the interim analyses of 20 and 30 patients and at the final analysis of 40 patients. Biomarker-positive boundaries apply at the first biomarker-positive assessment and, when applicable, at subsequent analyses of 20 and 30 cumulative biomarker-positive patients and at the final analysis of 40 biomarker-positive patients. At an interim analysis, satisfying the listed rule results in stopping for futility. At the final analysis, satisfying the listed rule results in no efficacy claim.",
+  "\\end{minipage}",
+  "\\end{table}"
+)
+writeLines(latex_lines,
+           file.path(output_dir, "proposed_boundary_table.tex"))
+
+## -----------------------------------------------------------------------------
+## 8. Exact result summaries and session information
+## -----------------------------------------------------------------------------
 
 type1_exact <- exact_results[
   exact_results$scenario_type == "Null",
@@ -1092,7 +1201,7 @@ write.csv(
 
 settings_table <- data.frame(
   Parameter = c(
-    "Analysis type", "p0", "p1", "alpha", "alpha_lower",
+    "Analysis type", "p0", "p1", "alpha",
     "calibration alternative",
     "all-comer interim looks", "post-enrichment positive looks",
     "N_A", "N_positive", "n_positive_min", "prior_a", "prior_b",
@@ -1101,7 +1210,7 @@ settings_table <- data.frame(
     "number of workers used", "parallel backend"
   ),
   Value = c(
-    "Exact recursive enumeration", p0, p1, alpha, alpha_lower,
+    "Exact recursive enumeration", p0, p1, alpha,
     paste0("theta_positive = ", p1, "; theta_negative = ", p0),
     paste(interim_n, collapse = ", "),
     paste(post_enrichment_n, collapse = ", "),
