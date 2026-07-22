@@ -1,16 +1,37 @@
 # Globally calibrated enrichment BOP2: reproducibility code
 
-This repository reproduces the numerical results and LaTeX tables reported in the main manuscript and supplementary material for the globally calibrated adaptive-enrichment BOP2 design.
+This repository reproduces the binary-endpoint analyses in the main manuscript and the complex-endpoint analyses in the Supplementary Material.
 
-See `MANUSCRIPT_OUTPUTS.md` for the mapping between manuscript table labels and generated files.
+The implementation uses the **no-bridging rule**: when the all-comer futility boundary is crossed with fewer than 10 biomarker-positive patients available, the trial stops rather than accruing additional patients solely to reach the minimum subgroup sample size.
+
+## Designs compared
+
+### Proposed design
+
+The all-comer and biomarker-positive boundary systems are jointly calibrated for the complete branching adaptive procedure. The calibration criterion controls
+
+\[
+\Pr(R_A \cup R_+)
+\]
+
+under the prespecified point global null over the biomarker-prevalence grid.
+
+### Comparator
+
+The comparator consists of independently calibrated conventional BOP2 components:
+
+1. A conventional all-comer BOP2 is calibrated for analyses at 20, 30, and 40 patients.
+2. For each attainable biomarker-positive entry sample size \(m=10,\ldots,30\), a conventional positive-population BOP2 is calibrated for the schedule consisting of \(m\), any subsequent scheduled analyses among 20 and 30 patients, and the final analysis at 40 patients.
+3. For each standalone BOP2, candidates with type I error no greater than 0.10 are considered first; the attainable type I error closest to 0.10 is selected, and power is used to resolve ties.
+4. The fixed standalone boundaries are then embedded in the no-bridging adaptive enrichment procedure. No constraint is imposed on the union probability \(\Pr(R_A\cup R_+)\) for the comparator.
 
 ## Requirements
 
 - R 4.2 or later
-- Base and recommended R packages only for the analyses
+- Base R packages for the analyses
 - Optional: `writexl` or `openxlsx` for consolidated Excel workbooks
 
-Run all commands from the repository root.
+Run commands from the repository root.
 
 ```bash
 Rscript run_main.R
@@ -23,51 +44,57 @@ To reproduce everything:
 Rscript run_all.R
 ```
 
-Parallel workers may be set before execution:
+Parallel workers can be specified as follows:
 
 ```bash
 BOP2_N_CORES=4 Rscript run_all.R
 ```
 
-## Main manuscript and binary-endpoint supplement
+## Main manuscript: binary endpoint
 
-`R/01_main_binary_exact.R` performs exact recursive enumeration for the binary endpoint and writes results to `results/main/`.
+`R/01_main_binary_exact.R` performs exact recursive enumeration and writes results to `results/main/`.
 
-The proposed design is selected from **all** candidate boundary pairs satisfying
+Important outputs include:
 
-```text
-maximum global type I error over the prevalence grid <= 0.10
-```
+- `exact_operating_characteristics.csv`
+- `exact_type1_error.csv`
+- `exact_power.csv`
+- `selected_designs.csv`
+- `proposed_boundary_table_allcomer.csv`
+- `proposed_boundary_table_positive.csv`
+- `comparator_allcomer_bop2_boundary.csv`
+- `comparator_positive_bop2_library.csv`
+- `enrichment_bop2_exact_results.xlsx` when an Excel-writing package is installed
 
-There is no lower type I error selection band. Among feasible candidates, the selection criteria are applied in this order:
+`R/02_main_tables.R` converts these results to LaTeX tables in `tables/main/`.
 
-1. largest average PRN-any under the single working alternative `(theta_positive, theta_negative) = (0.40, 0.20)` over the prevalence grid;
-2. largest minimum PRN-any under that working alternative;
-3. largest maximum global type I error, subject to remaining at or below 0.10.
+## Supplementary Material: complex categorical endpoints
 
-The fixed selected design is then evaluated over `theta_positive` in `{0.40, 0.50, 0.60}` and `theta_negative` in `{0.20, 0.10}`.
+`R/03_supp_complex_type1.R` performs simulation-based calibration and independent validation for:
 
-`R/02_main_tables.R` creates the five main-manuscript tables and the three detailed binary enrichment-path tables in the Supplementary Material. Outputs are written to `tables/main/`.
+- nested efficacy;
+- co-primary efficacy; and
+- joint efficacy--toxicity monitoring.
 
-## Complex categorical endpoints
+The proposed design is globally calibrated. The comparator uses an independently calibrated conventional all-comer BOP2 and an entry-specific library of conventional positive-population BOP2 designs. The script also writes both proposed and comparator boundary outputs to `results/supplement/`.
 
-`R/03_supp_complex_type1.R` performs simulation-based calibration and independent type I error evaluation for nested efficacy, co-primary efficacy, and joint efficacy-toxicity endpoints. Results are written to `results/supplement/`.
+`R/04_supp_tables.R` creates the corresponding LaTeX tables in `tables/supplement/`, including the standalone comparator boundary tables.
 
-The proposed complex-endpoint design requires the maximum one-sided 95% Wilson upper confidence bound for PRN-any over the prevalence grid to be at most 0.10. Among feasible candidates, the least conservative design is selected by average, then minimum, then maximum estimated PRN-any. The componentwise comparator separately constrains the Wilson upper bounds for PRN-all and PRN-positive and selects the feasible pair closest to `(0.10, 0.10)` in squared Euclidean distance.
+## Quick code checks
 
-`R/04_supp_tables.R` creates the complex-endpoint boundary and type I error tables in `tables/supplement/`.
-
-## Quick checks
-
-The reduced settings below are intended only for code checks and do not reproduce manuscript results. Quick-check outputs are stored in `quick_test` subdirectories and do not overwrite full-analysis outputs.
+The reduced settings below are intended only to check code execution. They do not reproduce manuscript results.
 
 ```bash
 BOP2_QUICK=1 Rscript run_main.R
 BOP2_COMPLEX_QUICK=1 Rscript run_supplement.R
 ```
 
-## Output policy
+The complex-endpoint Monte Carlo replicate counts can be overridden:
 
-Generated result and table files are ignored by Git by default. Remove or modify the corresponding `.gitignore` entries when selected outputs should be version-controlled.
+```bash
+BOP2_COMPLEX_N_CALIB=50000 BOP2_COMPLEX_N_VALID=100000 Rscript run_supplement.R
+```
 
-No local user paths or personal identifiers are embedded in the analysis scripts.
+## Output mapping
+
+See `MANUSCRIPT_OUTPUTS.md` for the mapping between manuscript tables and generated files. Generated result and table files are excluded by `.gitignore`; the directory placeholders are retained.
