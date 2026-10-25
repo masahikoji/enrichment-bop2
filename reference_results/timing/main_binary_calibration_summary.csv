@@ -1,0 +1,13 @@
+"quantity","value"
+"all-comer boundary candidates",149
+"positive boundary candidates",1697
+"candidate pairs evaluated",252853
+"candidate pairs with max global type I <= alpha",61461
+"candidate pairs in [alpha_lower, alpha]",4365
+"selected lambda_A",0.91
+"selected gamma_A",0.35
+"selected lambda_positive",0.88
+"selected gamma_positive",0.7
+"selected max global type I",0.098945427827869
+"selected average working-alternative PRN-any",0.764425277321558
+"selected minimum working-alternative PRN-any",0.571156306301

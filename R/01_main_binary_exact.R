@@ -1,12 +1,31 @@
-# Globally calibrated enrichment BOP2 design
-# Exact calibration and exact operating characteristics for the globally
-# calibrated enrichment BOP2 design with post-enrichment biomarker-positive
-# monitoring. No Monte Carlo simulation is performed. Computationally
-# intensive exact-enumeration steps are parallelized on macOS/Linux.
+# Globally calibrated enrichment BOP2 design (FINAL CORRECTED BINARY CODE)
 #
-# The core analysis uses base R. CSV files are always produced. A consolidated
-# XLSX workbook is also produced when either the 'writexl' or 'openxlsx' package
-# is installed. Set environment variable BOP2_QUICK=1 for a short code check.
+# Branching rule:
+#   - NO BRIDGING. If the all-comer futility boundary is crossed when fewer
+#     than n_pos_min biomarker-positive patients are available, the trial stops.
+#
+# Proposed design:
+#   - jointly calibrates the complete adaptive enrichment procedure;
+#   - requires the maximum exact global type I error over the prevalence grid
+#     to lie in [alpha_lower, alpha];
+#   - among candidates in this near-nominal band, selects the pair with the
+#     largest average PRN-any under
+#       (theta_positive, theta_negative) = (p1, p0);
+#   - breaks ties by the minimum PRN-any over prevalence and then by the larger
+#     maximum global type I error.
+#   This reproduces the selection logic in the earlier no-bridging program.
+#
+# Comparator:
+#   - independently calibrates a conventional all-comer BOP2;
+#   - independently calibrates a conventional positive-population BOP2 for
+#     each attainable first-assessment sample size;
+#   - follows Zhou, Lee, and Yuan (2017): among attainable boundaries with
+#     type I error <= alpha, first select the type I error closest to alpha and
+#     then maximize power;
+#   - embeds the fixed standalone BOP2 boundaries in the adaptive enrichment
+#     procedure without constraining the combined PRN-any.
+#
+# No Monte Carlo simulation is performed for the binary endpoint.
 
 rm(list = ls())
 options(stringsAsFactors = FALSE)
@@ -18,6 +37,8 @@ options(stringsAsFactors = FALSE)
 p0 <- 0.20
 p1 <- 0.40
 alpha <- 0.10
+alpha_lower <- 0.09
+
 interim_n <- c(20L, 30L)
 N_A <- 40L
 N_pos <- 40L
@@ -31,38 +52,31 @@ prevalence_grid <- c(0.4, 0.5, 0.6, 0.7, 0.8)
 theta_pos_grid <- c(p1, p1 + 0.10, p1 + 0.20)
 theta_neg_grid <- c(p0, p0 - 0.10)
 
-lambda_grid <- seq(0.005, 1.000, by = 0.005)
+# The proposed design uses the grid prespecified in the manuscript.
+proposed_lambda_grid <- seq(0.005, 1.000, by = 0.005)
+proposed_gamma_grid <- seq(0.050, 8.000, by = 0.050)
 
-# gamma is a positive shape parameter rather than a probability and therefore
-# need not be bounded by one. Values above one allow a cutoff that remains
-# relatively close to one early in the trial and decreases more sharply later.
-# The upper limit of eight is a numerical search bound; a warning is issued
-# below if the selected design reaches this limit.
-gamma_grid <- seq(0.050, 8.000, by = 0.050)
+# The conventional BOP2 comparator uses the finer grid employed in the
+# accompanying BOP2 reproduction program. Its selection rule is standalone
+# BOP2 calibration and is completely separate from selection of the proposed
+# design.
+bop2_lambda_grid <- seq(0.001, 1.000, by = 0.0025)
+bop2_gamma_grid <- seq(0.010, 10.000, by = 0.025)
 
-# Repository root and output directory. run_main.R and run_all.R set
-# ENRICHMENT_BOP2_ROOT automatically. Direct execution from the repository root
-# is also supported.
-project_dir <- path.expand(Sys.getenv(
-  "ENRICHMENT_BOP2_ROOT",
-  unset = normalizePath(getwd(), mustWork = TRUE)
-))
-result_root <- file.path(project_dir, "results", "main")
-
-if (!dir.exists(file.path(project_dir, "R"))) {
-  stop(
-    "Repository root was not found: ", project_dir,
-    "\nRun this analysis from the repository root or set ENRICHMENT_BOP2_ROOT."
-  )
-}
+# Repository-relative paths. Run from the repository root through run_main.R
+# or set ENRICHMENT_BOP2_ROOT explicitly.
+repo_root <- normalizePath(
+  Sys.getenv("ENRICHMENT_BOP2_ROOT", unset = getwd()),
+  mustWork = FALSE
+)
+result_root <- file.path(repo_root, "results", "main")
 dir.create(result_root, recursive = TRUE, showWarnings = FALSE)
 
 # Parallel processing is used for the two computationally intensive,
 # embarrassingly parallel steps: construction of biomarker-positive kernels
 # across candidate boundaries and construction of all-comer state spaces across
 # operating-characteristic scenarios. On macOS/Linux, forked workers are used.
-# Windows falls back to sequential execution because this program is intended
-# primarily for the specified macOS project environment.
+# Windows falls back to sequential execution.
 #
 # By default, use one fewer than the number of detected physical cores, capped
 # at 8 to limit memory use. Override this choice, for example with 10 workers,
@@ -89,8 +103,11 @@ output_dir <- result_root
 quick_test <- identical(Sys.getenv("BOP2_QUICK"), "1")
 if (quick_test) {
   message("BOP2_QUICK=1: running a reduced code check, not the manuscript analysis.")
-  lambda_grid <- seq(0.05, 1.00, by = 0.05)
-  gamma_grid <- seq(0.25, 2.00, by = 0.25)
+  alpha_lower <- 0
+  proposed_lambda_grid <- seq(0.05, 1.00, by = 0.05)
+  proposed_gamma_grid <- seq(0.25, 2.00, by = 0.25)
+  bop2_lambda_grid <- proposed_lambda_grid
+  bop2_gamma_grid <- proposed_gamma_grid
   prevalence_grid <- c(0.4, 0.8)
   theta_pos_grid <- c(0.4, 0.6)
   theta_neg_grid <- c(0.2, 0.1)
@@ -121,12 +138,14 @@ legacy_output_files <- c(
 unlink(file.path(output_dir, legacy_output_files), force = TRUE)
 
 stopifnot(
+  alpha_lower >= 0,
+  alpha_lower <= alpha,
   length(interim_n) == 2L,
   all(interim_n > 0L),
   all(diff(interim_n) > 0L),
-  max(interim_n) < min(N_A, N_pos),
-  n_pos_min > 0L,
-  n_pos_min < N_pos,
+  max(interim_n) < N_A,
+  N_A == N_pos,
+  n_pos_min <= min(interim_n),
   all(post_enrichment_n > 0L),
   all(diff(post_enrichment_n) > 0L),
   all(post_enrichment_n < N_pos),
@@ -457,28 +476,27 @@ make_positive_boundary_vector <- function(P_candidates, P_index) {
   bP
 }
 
-compute_positive_branch_candidate <- function(bP, theta_pos) {
-  # For every state at which the all-comer futility boundary is crossed,
-  # calculate the complete biomarker-positive-only branch. When fewer than
-  # n_pos_min biomarker-positive patients are available, the calculation first
-  # bridges to n_pos_min and performs the initial subgroup assessment there.
+compute_positive_path_candidate <- function(bP, theta_pos, enter_vector) {
+  # For each state at which the all-comer boundary is crossed, calculate the
+  # probability of eventual biomarker-positive success and the probabilities
+  # of stopping at the post-enrichment looks. The initial enrichment assessment
+  # is represented by enter_vector and is not counted again as a scheduled
+  # post-enrichment look when n_pos is exactly 20 or 30.
   n_states <- nrow(positive_states)
-  metric_names <- c(
-    "success", "final_no_claim", "initial_futility", "enter",
-    "stop20", "stop30", "expected_additional",
-    "analyzed20", "analyzed30", "bridged"
-  )
-  out_mat <- matrix(
-    0, nrow = n_states, ncol = length(metric_names),
-    dimnames = list(NULL, metric_names)
-  )
+  success <- numeric(n_states)
+  final_no_claim <- numeric(n_states)
+  stop20 <- numeric(n_states)
+  stop30 <- numeric(n_states)
+  expected_additional <- numeric(n_states)
+  reach20 <- numeric(n_states)
+  reach30 <- numeric(n_states)
 
-  active_memo <- new.env(hash = TRUE, parent = emptyenv())
+  memo <- new.env(hash = TRUE, parent = emptyenv())
 
-  recurse_active <- function(n_current, x_current) {
+  recurse <- function(n_current, x_current) {
     key <- paste0(n_current, ":", x_current)
-    if (exists(key, envir = active_memo, inherits = FALSE)) {
-      return(get(key, envir = active_memo, inherits = FALSE))
+    if (exists(key, envir = memo, inherits = FALSE)) {
+      return(get(key, envir = memo, inherits = FALSE))
     }
 
     future_looks <- c(
@@ -491,149 +509,123 @@ compute_positive_branch_candidate <- function(bP, theta_pos) {
     prob_u <- dbinom(u, size = increment, prob = theta_pos)
     x_next <- x_current + u
 
-    ans <- c(
+    out <- c(
       success = 0,
       final_no_claim = 0,
       stop20 = 0,
       stop30 = 0,
       expected_additional = increment,
-      analyzed20 = 0,
-      analyzed30 = 0
+      reach20 = 0,
+      reach30 = 0
     )
 
     if (next_look == N_pos) {
       claim <- x_next > bP[N_pos + 1L]
-      ans["success"] <- sum(prob_u[claim])
-      ans["final_no_claim"] <- sum(prob_u[!claim])
+      out["success"] <- sum(prob_u[claim])
+      out["final_no_claim"] <- sum(prob_u[!claim])
     } else {
       pass <- x_next > bP[next_look + 1L]
       if (next_look == 20L) {
-        ans["analyzed20"] <- 1
-        ans["stop20"] <- sum(prob_u[!pass])
+        out["reach20"] <- 1
+        out["stop20"] <- sum(prob_u[!pass])
       }
       if (next_look == 30L) {
-        ans["analyzed30"] <- 1
-        ans["stop30"] <- sum(prob_u[!pass])
+        out["reach30"] <- 1
+        out["stop30"] <- sum(prob_u[!pass])
       }
 
       pass_index <- which(pass)
       if (length(pass_index) > 0L) {
         for (k in pass_index) {
-          child <- recurse_active(next_look, x_next[k])
+          child <- recurse(next_look, x_next[k])
           weight <- prob_u[k]
-          ans["success"] <- ans["success"] + weight * child["success"]
-          ans["final_no_claim"] <- ans["final_no_claim"] +
+          out["success"] <- out["success"] + weight * child["success"]
+          out["final_no_claim"] <- out["final_no_claim"] +
             weight * child["final_no_claim"]
-          ans["stop20"] <- ans["stop20"] + weight * child["stop20"]
-          ans["stop30"] <- ans["stop30"] + weight * child["stop30"]
-          ans["expected_additional"] <- ans["expected_additional"] +
+          out["stop20"] <- out["stop20"] + weight * child["stop20"]
+          out["stop30"] <- out["stop30"] + weight * child["stop30"]
+          out["expected_additional"] <- out["expected_additional"] +
             weight * child["expected_additional"]
-          ans["analyzed20"] <- ans["analyzed20"] +
-            weight * child["analyzed20"]
-          ans["analyzed30"] <- ans["analyzed30"] +
-            weight * child["analyzed30"]
+          out["reach20"] <- out["reach20"] + weight * child["reach20"]
+          out["reach30"] <- out["reach30"] + weight * child["reach30"]
         }
       }
     }
 
-    partition <- ans["success"] + ans["final_no_claim"] +
-      ans["stop20"] + ans["stop30"]
-    if (abs(partition - 1) > 1e-10) {
-      stop("Active biomarker-positive path probabilities do not sum to one.")
-    }
-
-    assign(key, ans, envir = active_memo)
-    ans
+    assign(key, out, envir = memo)
+    out
   }
 
-  for (r in seq_len(n_states)) {
-    m <- positive_states$n_pos[r]
-    x <- positive_states$x_pos[r]
+  entered_states <- which(enter_vector > 0)
+  for (r in entered_states) {
+    ans <- recurse(positive_states$n_pos[r], positive_states$x_pos[r])
+    success[r] <- ans["success"]
+    final_no_claim[r] <- ans["final_no_claim"]
+    stop20[r] <- ans["stop20"]
+    stop30[r] <- ans["stop30"]
+    expected_additional[r] <- ans["expected_additional"]
+    reach20[r] <- ans["reach20"]
+    reach30[r] <- ans["reach30"]
+  }
 
-    if (m < n_pos_min) {
-      d0 <- n_pos_min - m
-      u0 <- 0:d0
-      prob0 <- dbinom(u0, size = d0, prob = theta_pos)
-      x0 <- x + u0
-      pass0 <- x0 > bP[n_pos_min + 1L]
-
-      out_mat[r, "bridged"] <- 1
-      out_mat[r, "initial_futility"] <- sum(prob0[!pass0])
-      out_mat[r, "enter"] <- sum(prob0[pass0])
-      out_mat[r, "expected_additional"] <- d0
-
-      pass_index <- which(pass0)
-      if (length(pass_index) > 0L) {
-        for (k in pass_index) {
-          child <- recurse_active(n_pos_min, x0[k])
-          weight <- prob0[k]
-          for (nm in c(
-            "success", "final_no_claim", "stop20", "stop30",
-            "analyzed20", "analyzed30"
-          )) {
-            out_mat[r, nm] <- out_mat[r, nm] + weight * child[nm]
-          }
-          out_mat[r, "expected_additional"] <-
-            out_mat[r, "expected_additional"] +
-            weight * child["expected_additional"]
-        }
-      }
-    } else {
-      pass0 <- x > bP[m + 1L]
-      out_mat[r, "initial_futility"] <- as.numeric(!pass0)
-      out_mat[r, "enter"] <- as.numeric(pass0)
-
-      # When the first assessment itself occurs at a scheduled sample size, it
-      # counts as that analysis and is not repeated later.
-      if (m == 20L) out_mat[r, "analyzed20"] <- 1
-      if (m == 30L) out_mat[r, "analyzed30"] <- 1
-
-      if (pass0) {
-        child <- recurse_active(m, x)
-        for (nm in c(
-          "success", "final_no_claim", "stop20", "stop30",
-          "analyzed20", "analyzed30"
-        )) {
-          out_mat[r, nm] <- out_mat[r, nm] + child[nm]
-        }
-        out_mat[r, "expected_additional"] <- child["expected_additional"]
-      }
+  if (length(entered_states) > 0L) {
+    total <- success + final_no_claim + stop20 + stop30
+    if (max(abs(total[entered_states] - 1)) > 1e-10) {
+      stop("Biomarker-positive path probabilities do not sum to one.")
     }
   }
 
-  initial_partition <- out_mat[, "initial_futility"] + out_mat[, "enter"]
-  if (max(abs(initial_partition - 1)) > 1e-10) {
-    stop("Initial biomarker-positive assessment probabilities do not sum to one.")
-  }
-  terminal_partition <- out_mat[, "success"] +
-    out_mat[, "final_no_claim"] + out_mat[, "initial_futility"] +
-    out_mat[, "stop20"] + out_mat[, "stop30"]
-  if (max(abs(terminal_partition - 1)) > 1e-10) {
-    stop("Biomarker-positive branch probabilities do not sum to one.")
-  }
-  if (any(out_mat[, "stop20"] - out_mat[, "analyzed20"] > 1e-10) ||
-      any(out_mat[, "stop30"] - out_mat[, "analyzed30"] > 1e-10)) {
-    stop("A stopping probability exceeds its corresponding analysis probability.")
-  }
-
-  as.data.frame(out_mat, stringsAsFactors = FALSE)
+  list(
+    success = success,
+    final_no_claim = final_no_claim,
+    stop20 = stop20,
+    stop30 = stop30,
+    expected_additional = expected_additional,
+    reach20 = reach20,
+    reach30 = reach30
+  )
 }
 
 make_positive_kernels <- function(P_candidates, theta_pos_values) {
+  boundary_columns <- paste0("b_", P_sample_sizes)
+  B <- as.matrix(P_candidates[, boundary_columns, drop = FALSE])
   nP <- nrow(P_candidates)
+
+  boundary_by_state <- matrix(Inf, nrow = n_positive_states, ncol = nP)
+  assessed <- positive_states$n_pos >= n_pos_min
+  for (n in n_pos_min:max_interim_pos) {
+    state_rows <- which(positive_states$n_pos == n)
+    boundary_col <- match(paste0("b_", n), boundary_columns)
+    boundary_by_state[state_rows, ] <- matrix(
+      B[, boundary_col],
+      nrow = length(state_rows),
+      ncol = nP,
+      byrow = TRUE
+    )
+  }
+
+  x_matrix <- matrix(
+    positive_states$x_pos,
+    nrow = n_positive_states,
+    ncol = nP
+  )
+  enter <- assessed & (x_matrix > boundary_by_state)
+  positive_futility_initial <- assessed & !enter
+
   success <- vector("list", length(theta_pos_values))
   names(success) <- format(theta_pos_values, trim = TRUE)
 
   for (theta_pos in theta_pos_values) {
-    message("  constructing positive-branch success kernels for theta_pos = ",
+    message("  constructing positive-path success kernels for theta_pos = ",
             theta_pos)
     candidate_results <- parallel_lapply(
       seq_len(nP),
       function(p_idx) {
         bP <- make_positive_boundary_vector(P_candidates, p_idx)
-        compute_positive_branch_candidate(
+        compute_positive_path_candidate(
           bP = bP,
-          theta_pos = theta_pos
+          theta_pos = theta_pos,
+          enter_vector = enter[, p_idx]
         )$success
       },
       n_workers = n_cores
@@ -645,6 +637,8 @@ make_positive_kernels <- function(P_candidates, theta_pos_values) {
   }
 
   list(
+    enter = enter * 1,
+    positive_futility_initial = positive_futility_initial * 1,
     success = success,
     sample_sizes = P_sample_sizes
   )
@@ -652,17 +646,181 @@ make_positive_kernels <- function(P_candidates, theta_pos_values) {
 
 positive_detail_cache <- new.env(hash = TRUE, parent = emptyenv())
 
-get_positive_detail <- function(P_candidates, P_index, theta_pos) {
+get_positive_detail <- function(P_candidates, positive_kernels,
+                                P_index, theta_pos) {
   key <- paste(P_index, format(theta_pos, digits = 17), sep = ":")
   if (!exists(key, envir = positive_detail_cache, inherits = FALSE)) {
     bP <- make_positive_boundary_vector(P_candidates, P_index)
-    detail <- compute_positive_branch_candidate(
+    detail <- compute_positive_path_candidate(
       bP = bP,
-      theta_pos = theta_pos
+      theta_pos = theta_pos,
+      enter_vector = positive_kernels$enter[, P_index]
     )
     assign(key, detail, envir = positive_detail_cache)
   }
   get(key, envir = positive_detail_cache, inherits = FALSE)
+}
+
+make_entry_specific_positive_kernels <- function(
+    P_candidates,
+    positive_library,
+    theta_pos_values
+) {
+  n_states <- nrow(positive_states)
+  enter <- numeric(n_states)
+  positive_futility_initial <- numeric(n_states)
+
+  for (entry_n in n_pos_min:max_interim_pos) {
+    library_row <- positive_library[
+      positive_library$entry_n == entry_n,
+      ,
+      drop = FALSE
+    ]
+    if (nrow(library_row) != 1L) {
+      stop("Expected one positive BOP2 design for entry_n = ", entry_n)
+    }
+    P_index <- library_row$P_index
+    bP <- make_positive_boundary_vector(P_candidates, P_index)
+    state_rows <- which(positive_states$n_pos == entry_n)
+    pass <- positive_states$x_pos[state_rows] > bP[entry_n + 1L]
+    enter[state_rows] <- as.numeric(pass)
+    positive_futility_initial[state_rows] <- as.numeric(!pass)
+  }
+
+  success <- vector("list", length(theta_pos_values))
+  details <- vector("list", length(theta_pos_values))
+  names(success) <- format(theta_pos_values, trim = TRUE)
+  names(details) <- format(theta_pos_values, trim = TRUE)
+
+  for (theta_pos in theta_pos_values) {
+    message(
+      "  constructing entry-specific conventional BOP2 kernels for theta_pos = ",
+      theta_pos
+    )
+    combined <- list(
+      success = numeric(n_states),
+      final_no_claim = numeric(n_states),
+      stop20 = numeric(n_states),
+      stop30 = numeric(n_states),
+      expected_additional = numeric(n_states),
+      reach20 = numeric(n_states),
+      reach30 = numeric(n_states)
+    )
+
+    for (entry_n in n_pos_min:max_interim_pos) {
+      library_row <- positive_library[
+        positive_library$entry_n == entry_n,
+        ,
+        drop = FALSE
+      ]
+      P_index <- library_row$P_index
+      bP <- make_positive_boundary_vector(P_candidates, P_index)
+      state_rows <- which(positive_states$n_pos == entry_n)
+      entry_vector <- numeric(n_states)
+      entry_vector[state_rows] <- enter[state_rows]
+
+      detail <- compute_positive_path_candidate(
+        bP = bP,
+        theta_pos = theta_pos,
+        enter_vector = entry_vector
+      )
+
+      for (field in names(combined)) {
+        combined[[field]][state_rows] <- detail[[field]][state_rows]
+      }
+    }
+
+    success[[format(theta_pos, trim = TRUE)]] <- combined$success
+    details[[format(theta_pos, trim = TRUE)]] <- combined
+  }
+
+  list(
+    enter = enter,
+    positive_futility_initial = positive_futility_initial,
+    success = success,
+    details = details,
+    positive_library = positive_library
+  )
+}
+
+exact_metrics_entry_specific_positive <- function(
+    component,
+    comparator_positive_kernels,
+    A_index
+) {
+  w1 <- component$W1[A_index, ]
+  w2 <- component$W2[A_index, ]
+  w <- w1 + w2
+  scenario <- component$scenario
+  theta_key <- format(scenario$theta_pos, trim = TRUE)
+
+  success_vector <- comparator_positive_kernels$success[[theta_key]]
+  detail <- comparator_positive_kernels$details[[theta_key]]
+  enter_vector <- comparator_positive_kernels$enter
+  initial_futility_vector <-
+    comparator_positive_kernels$positive_futility_initial
+
+  if (is.null(success_vector) || is.null(detail)) {
+    stop("No entry-specific positive BOP2 kernel for theta_pos = ",
+         scenario$theta_pos)
+  }
+
+  low_state <- positive_states$n_pos < n_pos_min
+  assessed_state <- !low_state
+  n_state <- positive_states$n_pos
+
+  prn_all <- component$prn_all[A_index]
+  prn_positive <- sum(w * success_vector)
+  pet_low <- sum(w[low_state])
+  pet_positive_initial <- sum(w * initial_futility_vector)
+  pet_positive_look20 <- sum(w * detail$stop20)
+  pet_positive_look30 <- sum(w * detail$stop30)
+  pet_positive <- pet_positive_initial + pet_positive_look20 +
+    pet_positive_look30
+  enter <- sum(w * enter_vector)
+
+  if (abs(pet_low + pet_positive_initial + enter - sum(w)) > 1e-9) {
+    stop("Initial comparator enrichment-path probabilities do not sum correctly.")
+  }
+  post_partition <- sum(
+    w * (detail$success + detail$final_no_claim +
+           detail$stop20 + detail$stop30)
+  )
+  if (abs(post_partition - enter) > 1e-9) {
+    stop("Comparator post-enrichment path probabilities do not sum correctly.")
+  }
+
+  mean_total_sample_size <-
+    component$no_cross_prob[A_index] * N_A +
+    sum(w1) * interim_n[1L] +
+    sum(w2) * interim_n[2L] +
+    sum(w * detail$expected_additional)
+
+  mean_positive_sample_size <-
+    component$no_cross_expected_n_pos[A_index] +
+    sum(w * n_state) +
+    sum(w * detail$expected_additional)
+
+  c(
+    PRN_any = prn_all + prn_positive,
+    PRN_all = prn_all,
+    PRN_positive = prn_positive,
+    PET_any = pet_low + pet_positive,
+    PET_all = sum(w),
+    PET_positive = pet_positive,
+    PET_positive_initial = pet_positive_initial,
+    PET_positive_look20 = pet_positive_look20,
+    PET_positive_look30 = pet_positive_look30,
+    PET_low_biomarker_count = pet_low,
+    Reassess_positive = sum(w[assessed_state]),
+    Enter_enrichment = enter,
+    Enter_enrichment_look1 = sum(w1 * enter_vector),
+    Enter_enrichment_look2 = sum(w2 * enter_vector),
+    Reach_positive_look20 = sum(w * detail$reach20),
+    Reach_positive_look30 = sum(w * detail$reach30),
+    Mean_total_sample_size = mean_total_sample_size,
+    Mean_positive_sample_size = mean_positive_sample_size
+  )
 }
 
 calibration_prn_matrices <- function(component, positive_kernels) {
@@ -694,8 +852,12 @@ exact_metrics_selected <- function(component, positive_kernels,
 
   theta_key <- format(scenario$theta_pos, trim = TRUE)
   success_vector <- positive_kernels$success[[theta_key]][, P_index]
+  enter_vector <- positive_kernels$enter[, P_index]
+  initial_futility_vector <-
+    positive_kernels$positive_futility_initial[, P_index]
   detail <- get_positive_detail(
     P_candidates = P_candidates,
+    positive_kernels = positive_kernels,
     P_index = P_index,
     theta_pos = scenario$theta_pos
   )
@@ -703,35 +865,29 @@ exact_metrics_selected <- function(component, positive_kernels,
     stop("Cached and detailed biomarker-positive success probabilities differ.")
   }
 
+  low_state <- positive_states$n_pos < n_pos_min
+  assessed_state <- !low_state
   n_state <- positive_states$n_pos
-  prn_all <- component$prn_all[A_index]
-  prn_positive <- sum(w * detail$success)
 
-  first_assessment <- sum(w)
-  bridged <- sum(w * detail$bridged)
-  pet_positive_initial <- sum(w * detail$initial_futility)
-  enter <- sum(w * detail$enter)
+  prn_all <- component$prn_all[A_index]
+  prn_positive <- sum(w * success_vector)
+  pet_low <- sum(w[low_state])
+  pet_positive_initial <- sum(w * initial_futility_vector)
   pet_positive_look20 <- sum(w * detail$stop20)
   pet_positive_look30 <- sum(w * detail$stop30)
   pet_positive <- pet_positive_initial + pet_positive_look20 +
     pet_positive_look30
-  analyzed20 <- sum(w * detail$analyzed20)
-  analyzed30 <- sum(w * detail$analyzed30)
+  enter <- sum(w * enter_vector)
 
-  if (abs(first_assessment - pet_positive_initial - enter) > 1e-9) {
-    stop("First biomarker-positive assessment probabilities do not sum correctly.")
+  if (abs(pet_low + pet_positive_initial + enter - sum(w)) > 1e-9) {
+    stop("Initial enrichment-path probabilities do not sum correctly.")
   }
-  terminal_partition <- sum(
+  post_partition <- sum(
     w * (detail$success + detail$final_no_claim +
-           detail$initial_futility + detail$stop20 + detail$stop30)
+           detail$stop20 + detail$stop30)
   )
-  if (abs(terminal_partition - first_assessment) > 1e-9) {
-    stop("Biomarker-positive branch terminal probabilities do not sum correctly.")
-  }
-  if (bridged - first_assessment > 1e-9 ||
-      pet_positive_look20 - analyzed20 > 1e-9 ||
-      pet_positive_look30 - analyzed30 > 1e-9) {
-    stop("Detailed biomarker-positive path metrics are internally inconsistent.")
+  if (abs(post_partition - enter) > 1e-9) {
+    stop("Post-enrichment path probabilities do not sum correctly.")
   }
 
   mean_total_sample_size <-
@@ -749,19 +905,19 @@ exact_metrics_selected <- function(component, positive_kernels,
     PRN_any = prn_all + prn_positive,
     PRN_all = prn_all,
     PRN_positive = prn_positive,
-    PET_any = pet_positive,
+    PET_any = pet_low + pet_positive,
+    PET_all = sum(w),
     PET_positive = pet_positive,
-    Allcomer_futility = first_assessment,
-    First_positive_assessment = first_assessment,
-    Bridge_to_minimum = bridged,
     PET_positive_initial = pet_positive_initial,
-    Enter_enrichment = enter,
-    Enter_enrichment_look1 = sum(w1 * detail$enter),
-    Enter_enrichment_look2 = sum(w2 * detail$enter),
-    Analyzed_positive_look20 = analyzed20,
     PET_positive_look20 = pet_positive_look20,
-    Analyzed_positive_look30 = analyzed30,
     PET_positive_look30 = pet_positive_look30,
+    PET_low_biomarker_count = pet_low,
+    Reassess_positive = sum(w[assessed_state]),
+    Enter_enrichment = enter,
+    Enter_enrichment_look1 = sum(w1 * enter_vector),
+    Enter_enrichment_look2 = sum(w2 * enter_vector),
+    Reach_positive_look20 = sum(w * detail$reach20),
+    Reach_positive_look30 = sum(w * detail$reach30),
     Mean_total_sample_size = mean_total_sample_size,
     Mean_positive_sample_size = mean_positive_sample_size
   )
@@ -774,8 +930,14 @@ select_candidate_pair <- function(feasible, avg_power, min_power,
     stop("No feasible candidate pair for ", label)
   }
 
+  # Selection rule for the proposed method, as specified in the manuscript:
+  # maximize average PRN-any under the calibration alternative, then maximize
+  # the minimum PRN-any over prevalence, and use the larger max global type I
+  # error only as the final tie breaker. This is intentionally different from
+  # the standalone conventional-BOP2 selection rule below.
   tol <- 1e-12
   best <- feasible_idx
+
   target <- max(avg_power[best])
   best <- best[abs(avg_power[best] - target) <= tol]
 
@@ -797,49 +959,191 @@ select_candidate_pair <- function(feasible, avg_power, min_power,
   )
 }
 
+# Exact rejection probability of a conventional single-population BOP2 design
+# with a fixed sequence of analyses.
+standalone_bop2_rejection <- function(boundaries, looks, theta) {
+  active <- c(1)
+  previous_n <- 0L
+
+  for (j in seq_along(looks)) {
+    n_now <- looks[j]
+    increment_n <- n_now - previous_n
+    increment_pmf <- dbinom(0:increment_n, increment_n, theta)
+    distribution_now <- numeric(n_now + 1L)
+
+    for (x0 in 0:previous_n) {
+      if (active[x0 + 1L] == 0) next
+      distribution_now[(x0 + 0:increment_n) + 1L] <-
+        distribution_now[(x0 + 0:increment_n) + 1L] +
+        active[x0 + 1L] * increment_pmf
+    }
+
+    distribution_now[(0:n_now) <= boundaries[j]] <- 0
+    active <- distribution_now
+    previous_n <- n_now
+  }
+
+  sum(active)
+}
+
+select_standalone_bop2 <- function(candidates, looks, boundary_columns,
+                                   theta_null, theta_alt, label) {
+  type1 <- numeric(nrow(candidates))
+  power <- numeric(nrow(candidates))
+
+  for (i in seq_len(nrow(candidates))) {
+    boundaries <- as.integer(unlist(
+      candidates[i, boundary_columns, drop = FALSE],
+      use.names = FALSE
+    ))
+    type1[i] <- standalone_bop2_rejection(boundaries, looks, theta_null)
+    power[i] <- standalone_bop2_rejection(boundaries, looks, theta_alt)
+  }
+
+  feasible <- which(type1 <= alpha + 1e-12)
+  if (length(feasible) == 0L) {
+    stop("No feasible standalone BOP2 candidate for ", label)
+  }
+
+  # Zhou et al. (2017): select the attainable type I error closest to, and not
+  # above, alpha. Among designs attaining that type I error, maximize power.
+  tol <- 1e-12
+  closest_type1 <- max(type1[feasible])
+  best <- feasible[abs(type1[feasible] - closest_type1) <= tol]
+  maximum_power <- max(power[best])
+  best <- best[abs(power[best] - maximum_power) <= tol]
+  chosen <- best[1L]
+
+  list(
+    index = chosen,
+    type1 = type1[chosen],
+    power = power[chosen],
+    all_type1 = type1,
+    all_power = power,
+    looks = looks
+  )
+}
+
+build_entry_specific_positive_bop2_library <- function(P_candidates) {
+  rows <- vector("list", max_interim_pos - n_pos_min + 1L)
+  row_index <- 1L
+
+  for (entry_n in n_pos_min:max_interim_pos) {
+    looks <- sort(unique(c(
+      entry_n,
+      post_enrichment_n[post_enrichment_n > entry_n],
+      N_pos
+    )))
+    selected <- select_standalone_bop2(
+      candidates = P_candidates,
+      looks = looks,
+      boundary_columns = paste0("b_", looks),
+      theta_null = p0,
+      theta_alt = p1,
+      label = paste0("positive BOP2 entered at n = ", entry_n)
+    )
+    candidate <- P_candidates[selected$index, , drop = FALSE]
+
+    rows[[row_index]] <- data.frame(
+      entry_n = entry_n,
+      analysis_schedule = paste(looks, collapse = ","),
+      P_index = selected$index,
+      candidate_id = candidate$candidate_id,
+      lambda = candidate$lambda,
+      gamma = candidate$gamma,
+      standalone_type1 = selected$type1,
+      standalone_power = selected$power,
+      boundary_at_entry = as.integer(candidate[[paste0("b_", entry_n)]]),
+      boundary_20 = if (20L %in% looks) as.integer(candidate[["b_20"]]) else NA_integer_,
+      boundary_30 = if (30L %in% looks) as.integer(candidate[["b_30"]]) else NA_integer_,
+      boundary_40 = as.integer(candidate[["b_40"]]),
+      stringsAsFactors = FALSE
+    )
+    row_index <- row_index + 1L
+  }
+
+  do.call(rbind, rows)
+}
+
 ## -----------------------------------------------------------------------------
 ## 3. Candidate boundary tables
 ## -----------------------------------------------------------------------------
 
-message("Generating unique all-comer boundary candidates...")
+message("Generating proposed-design boundary candidates...")
 A_sample_sizes <- c(interim_n, N_A)
-A_candidates <- make_boundary_candidates(
-  sample_sizes = A_sample_sizes,
-  max_sample_size = N_A,
-  lambda_values = lambda_grid,
-  gamma_values = gamma_grid,
-  prefix = "all-comer"
-)
-
-message("Generating unique biomarker-positive boundary candidates...")
 P_sample_sizes <- sort(unique(c(
   n_pos_min:max_interim_pos, post_enrichment_n, N_pos
 )))
+
+A_candidates <- make_boundary_candidates(
+  sample_sizes = A_sample_sizes,
+  max_sample_size = N_A,
+  lambda_values = proposed_lambda_grid,
+  gamma_values = proposed_gamma_grid,
+  prefix = "proposed all-comer"
+)
 P_candidates <- make_boundary_candidates(
   sample_sizes = P_sample_sizes,
   max_sample_size = N_pos,
-  lambda_values = lambda_grid,
-  gamma_values = gamma_grid,
-  prefix = "biomarker-positive"
+  lambda_values = proposed_lambda_grid,
+  gamma_values = proposed_gamma_grid,
+  prefix = "proposed biomarker-positive"
 )
 
-message("Unique boundary candidates: all-comer = ", nrow(A_candidates),
-        "; biomarker-positive = ", nrow(P_candidates),
-        "; candidate pairs = ",
-        format(nrow(A_candidates) * nrow(P_candidates), big.mark = ","))
+message("Generating standalone conventional-BOP2 boundary candidates...")
+A_bop2_candidates <- make_boundary_candidates(
+  sample_sizes = A_sample_sizes,
+  max_sample_size = N_A,
+  lambda_values = bop2_lambda_grid,
+  gamma_values = bop2_gamma_grid,
+  prefix = "standalone all-comer BOP2"
+)
+P_bop2_candidates <- make_boundary_candidates(
+  sample_sizes = P_sample_sizes,
+  max_sample_size = N_pos,
+  lambda_values = bop2_lambda_grid,
+  gamma_values = bop2_gamma_grid,
+  prefix = "standalone positive BOP2"
+)
+
+message(
+  "Unique proposed candidates: all-comer = ", nrow(A_candidates),
+  "; positive = ", nrow(P_candidates),
+  "; pairs = ",
+  format(nrow(A_candidates) * nrow(P_candidates), big.mark = ",")
+)
+message(
+  "Unique standalone-BOP2 candidates: all-comer = ",
+  nrow(A_bop2_candidates), "; positive = ", nrow(P_bop2_candidates)
+)
 
 write.csv(A_candidates,
-          file.path(output_dir, "allcomer_boundary_candidates.csv"),
+          file.path(output_dir, "proposed_allcomer_boundary_candidates.csv"),
           row.names = FALSE)
 write.csv(P_candidates,
-          file.path(output_dir, "positive_boundary_candidates.csv"),
+          file.path(output_dir, "proposed_positive_boundary_candidates.csv"),
           row.names = FALSE)
+write.csv(A_bop2_candidates,
+          file.path(output_dir, "bop2_allcomer_boundary_candidates.csv"),
+          row.names = FALSE)
+write.csv(P_bop2_candidates,
+          file.path(output_dir, "bop2_positive_boundary_candidates.csv"),
+          row.names = FALSE)
+
 candidate_counts <- data.frame(
-  component = c("all-comer", "biomarker-positive", "candidate pairs"),
+  component = c(
+    "proposed all-comer",
+    "proposed biomarker-positive",
+    "proposed candidate pairs",
+    "standalone all-comer BOP2",
+    "standalone positive BOP2"
+  ),
   count = c(
     nrow(A_candidates),
     nrow(P_candidates),
-    nrow(A_candidates) * nrow(P_candidates)
+    nrow(A_candidates) * nrow(P_candidates),
+    nrow(A_bop2_candidates),
+    nrow(P_bop2_candidates)
   ),
   stringsAsFactors = FALSE
 )
@@ -967,84 +1271,215 @@ for (s_idx in seq_along(components)) {
 }
 
 feasible_global <- max_global_type1 <= alpha + 1e-12
+preferred_global <- feasible_global &
+  max_global_type1 >= alpha_lower - 1e-12
 
-feasible_componentwise <-
-  matrix(max_all_type1 <= alpha + 1e-12, nrow = nA, ncol = nP) &
-  max_positive_type1 <= alpha + 1e-12
+if (!any(preferred_global)) {
+  stop(
+    "No proposed-design candidate has maximum exact global type I error in [",
+    alpha_lower, ", ", alpha, "]. Extend the proposed-design search grid ",
+    "or reconsider the prespecified near-nominal calibration band."
+  )
+}
 
 selected_global <- select_candidate_pair(
-  feasible = feasible_global,
+  feasible = preferred_global,
   avg_power = avg_power,
   min_power = min_power,
   type1_metric = max_global_type1,
-  label = "globally calibrated design"
-)
-selected_componentwise <- select_candidate_pair(
-  feasible = feasible_componentwise,
-  avg_power = avg_power,
-  min_power = min_power,
-  type1_metric = pmax(matrix(max_all_type1, nrow = nA, ncol = nP),
-                      max_positive_type1),
-  label = "componentwise-calibrated comparator"
+  label = "globally calibrated design in the near-nominal alpha band"
 )
 
-make_selected_row <- function(method, selected) {
-  a <- A_candidates[selected$A_index, ]
-  p <- P_candidates[selected$P_index, ]
-  data.frame(
-    Method = method,
-    A_candidate_id = a$candidate_id,
-    P_candidate_id = p$candidate_id,
-    lambda_A = a$lambda,
-    gamma_A = a$gamma,
-    lambda_positive = p$lambda,
-    gamma_positive = p$gamma,
-    max_global_type1 = max_global_type1[selected$A_index,
-                                         selected$P_index],
-    max_allcomer_type1 = max_all_type1[selected$A_index],
-    max_positive_type1 = max_positive_type1[selected$A_index,
-                                             selected$P_index],
-    average_power = selected$average_power,
-    minimum_power = selected$minimum_power,
-    stringsAsFactors = FALSE
-  )
-}
+message(
+  "Selected proposed design among candidates with maximum exact global ",
+  "type I error in [", alpha_lower, ", ", alpha, "]; selected maximum = ",
+  selected_global$type1_metric
+)
+
+proposed_calibration_diagnostics <- data.frame(
+  quantity = c(
+    "number of candidate pairs",
+    "number satisfying max global type I <= alpha",
+    "number satisfying alpha_lower <= max global type I <= alpha",
+    "selected max global type I",
+    "selected average calibration PRN-any",
+    "selected minimum calibration PRN-any"
+  ),
+  value = c(
+    length(max_global_type1),
+    sum(feasible_global),
+    sum(preferred_global),
+    selected_global$type1_metric,
+    selected_global$average_power,
+    selected_global$minimum_power
+  ),
+  stringsAsFactors = FALSE
+)
+write.csv(
+  proposed_calibration_diagnostics,
+  file.path(output_dir, "proposed_calibration_diagnostics.csv"),
+  row.names = FALSE
+)
+
+# Conventional BOP2 comparator.
+# 1. The all-comer BOP2 is calibrated independently for analyses at 20, 30,
+#    and 40 patients.
+# 2. The positive-population BOP2 is calibrated independently for every
+#    attainable first-assessment size m. Its analysis schedule is
+#    {m, future scheduled looks among 20 and 30, 40}.
+# 3. The selected boundaries are then embedded in the enrichment procedure.
+# No criterion involving the combined adaptive procedure is used in either
+# standalone BOP2 calibration.
+standalone_A <- select_standalone_bop2(
+  candidates = A_bop2_candidates,
+  looks = A_sample_sizes,
+  boundary_columns = paste0("b_", A_sample_sizes),
+  theta_null = p0,
+  theta_alt = p1,
+  label = "all-comer BOP2"
+)
+
+comparator_allcomer_boundary <- data.frame(
+  analysis_n = A_sample_sizes,
+  futility_or_no_claim_boundary = as.integer(unlist(
+    A_bop2_candidates[
+      standalone_A$index,
+      paste0("b_", A_sample_sizes),
+      drop = FALSE
+    ],
+    use.names = FALSE
+  )),
+  is_final = A_sample_sizes == N_A,
+  standalone_type1 = standalone_A$type1,
+  standalone_power = standalone_A$power,
+  stringsAsFactors = FALSE
+)
+write.csv(
+  comparator_allcomer_boundary,
+  file.path(output_dir, "comparator_allcomer_bop2_boundary.csv"),
+  row.names = FALSE
+)
+
+positive_bop2_library <-
+  build_entry_specific_positive_bop2_library(P_bop2_candidates)
+write.csv(
+  positive_bop2_library,
+  file.path(output_dir, "comparator_positive_bop2_library.csv"),
+  row.names = FALSE
+)
+
+comparator_positive_kernels <- make_entry_specific_positive_kernels(
+  P_candidates = P_bop2_candidates,
+  positive_library = positive_bop2_library,
+  theta_pos_values = positive_theta_values
+)
+
+selected_comparator <- list(
+  A_index = standalone_A$index,
+  standalone_A_type1 = standalone_A$type1,
+  standalone_A_power = standalone_A$power
+)
+
+selected_A_global <- A_candidates[selected_global$A_index, , drop = FALSE]
+selected_P_global <- P_candidates[selected_global$P_index, , drop = FALSE]
+selected_A_comparator <-
+  A_bop2_candidates[standalone_A$index, , drop = FALSE]
+
+message("Constructing exact all-comer path components for the selected ",
+        "standalone all-comer BOP2 comparator...")
+comparator_components <- parallel_lapply(
+  scenario_rows,
+  function(s) build_allcomer_components(s[1L, ], selected_A_comparator),
+  n_workers = n_cores
+)
 
 selected_designs <- rbind(
-  make_selected_row("Globally calibrated", selected_global),
-  make_selected_row("Componentwise calibrated", selected_componentwise)
+  data.frame(
+    Method = "Globally calibrated",
+    A_candidate_id = selected_A_global$candidate_id,
+    P_candidate_id = selected_P_global$candidate_id,
+    Positive_component = "Single jointly calibrated boundary function",
+    lambda_A = selected_A_global$lambda,
+    gamma_A = selected_A_global$gamma,
+    lambda_positive = selected_P_global$lambda,
+    gamma_positive = selected_P_global$gamma,
+    max_global_type1 = selected_global$type1_metric,
+    max_allcomer_type1 = max_all_type1[selected_global$A_index],
+    max_positive_type1 =
+      max_positive_type1[selected_global$A_index, selected_global$P_index],
+    average_power = selected_global$average_power,
+    minimum_power = selected_global$minimum_power,
+    standalone_allcomer_type1 = NA_real_,
+    standalone_allcomer_power = NA_real_,
+    alpha_lower = alpha_lower,
+    selected_from_near_nominal_band = TRUE,
+    stringsAsFactors = FALSE
+  ),
+  data.frame(
+    Method = "Independent conventional BOP2 components",
+    A_candidate_id = selected_A_comparator$candidate_id,
+    P_candidate_id = NA_integer_,
+    Positive_component = "Entry-specific conventional BOP2 library",
+    lambda_A = selected_A_comparator$lambda,
+    gamma_A = selected_A_comparator$gamma,
+    lambda_positive = NA_real_,
+    gamma_positive = NA_real_,
+    max_global_type1 = NA_real_,
+    max_allcomer_type1 = standalone_A$type1,
+    max_positive_type1 = NA_real_,
+    average_power = NA_real_,
+    minimum_power = NA_real_,
+    standalone_allcomer_type1 = standalone_A$type1,
+    standalone_allcomer_power = standalone_A$power,
+    alpha_lower = NA_real_,
+    selected_from_near_nominal_band = NA,
+    stringsAsFactors = FALSE
+  )
 )
 
-if (any(abs(selected_designs$gamma_A - max(gamma_grid)) < 1e-12) ||
-    any(abs(selected_designs$gamma_positive - max(gamma_grid)) < 1e-12)) {
+if (any(abs(selected_designs$gamma_A[1L] -
+            max(proposed_gamma_grid)) < 1e-12, na.rm = TRUE) ||
+    any(abs(selected_designs$gamma_positive[1L] -
+            max(proposed_gamma_grid)) < 1e-12, na.rm = TRUE) ||
+    any(abs(selected_designs$gamma_A[2L] -
+            max(bop2_gamma_grid)) < 1e-12, na.rm = TRUE) ||
+    any(abs(positive_bop2_library$gamma -
+            max(bop2_gamma_grid)) < 1e-12, na.rm = TRUE)) {
   warning(
-    "At least one selected gamma value is at the upper search limit. ",
-    "Consider extending gamma_grid to verify that the selected boundary table ",
-    "is not constrained by the numerical bound."
+    "At least one selected gamma value is at its upper search limit. ",
+    "Consider extending the corresponding gamma grid before manuscript use."
   )
 }
-write.csv(selected_designs,
-          file.path(output_dir, "selected_designs.csv"),
-          row.names = FALSE)
+
+write.csv(
+  selected_designs,
+  file.path(output_dir, "selected_designs.csv"),
+  row.names = FALSE
+)
 print(selected_designs)
 
 saveRDS(
   list(
     settings = list(
-      p0 = p0, p1 = p1, alpha = alpha,
+      p0 = p0, p1 = p1, alpha = alpha, alpha_lower = alpha_lower,
       interim_n = interim_n, N_A = N_A, N_pos = N_pos,
       n_pos_min = n_pos_min, post_enrichment_n = post_enrichment_n,
       prior_a = prior_a, prior_b = prior_b,
       prevalence_grid = prevalence_grid,
       theta_pos_grid = theta_pos_grid,
       theta_neg_grid = theta_neg_grid,
-      lambda_grid = lambda_grid,
-      gamma_grid = gamma_grid
+      proposed_lambda_grid = proposed_lambda_grid,
+      proposed_gamma_grid = proposed_gamma_grid,
+      bop2_lambda_grid = bop2_lambda_grid,
+      bop2_gamma_grid = bop2_gamma_grid
     ),
     A_candidates = A_candidates,
     P_candidates = P_candidates,
+    A_bop2_candidates = A_bop2_candidates,
+    P_bop2_candidates = P_bop2_candidates,
     selected_global = selected_global,
-    selected_componentwise = selected_componentwise,
+    selected_comparator = selected_comparator,
+    positive_bop2_library = positive_bop2_library,
     selected_designs = selected_designs
   ),
   file.path(output_dir, "calibration_objects.rds")
@@ -1054,37 +1489,88 @@ saveRDS(
 ## 6. Exact operating characteristics for selected designs
 ## -----------------------------------------------------------------------------
 
-selected_index <- list(
-  "Globally calibrated" = c(selected_global$A_index,
-                              selected_global$P_index),
-  "Componentwise calibrated" = c(selected_componentwise$A_index,
-                                   selected_componentwise$P_index)
-)
-
-exact_rows <- vector("list", length(components) * length(selected_index))
+exact_rows <- vector("list", length(components) * 2L)
 out_idx <- 1L
 for (s_idx in seq_along(components)) {
-  for (method in names(selected_index)) {
-    ij <- selected_index[[method]]
-    vals <- exact_metrics_selected(
-      component = components[[s_idx]],
-      positive_kernels = positive_kernels,
-      A_index = ij[1L],
-      P_index = ij[2L]
-    )
-    exact_rows[[out_idx]] <- cbind(
-      all_scenarios[s_idx, ],
-      Method = method,
-      as.data.frame(as.list(vals), stringsAsFactors = FALSE)
-    )
-    out_idx <- out_idx + 1L
-  }
+  vals_proposed <- exact_metrics_selected(
+    component = components[[s_idx]],
+    positive_kernels = positive_kernels,
+    A_index = selected_global$A_index,
+    P_index = selected_global$P_index
+  )
+  exact_rows[[out_idx]] <- cbind(
+    all_scenarios[s_idx, ],
+    Method = "Globally calibrated",
+    as.data.frame(as.list(vals_proposed), stringsAsFactors = FALSE)
+  )
+  out_idx <- out_idx + 1L
+
+  vals_comparator <- exact_metrics_entry_specific_positive(
+    component = comparator_components[[s_idx]],
+    comparator_positive_kernels = comparator_positive_kernels,
+    A_index = 1L
+  )
+  exact_rows[[out_idx]] <- cbind(
+    all_scenarios[s_idx, ],
+    Method = "Independent conventional BOP2 components",
+    as.data.frame(as.list(vals_comparator), stringsAsFactors = FALSE)
+  )
+  out_idx <- out_idx + 1L
 }
+
 exact_results <- do.call(rbind, exact_rows)
 rownames(exact_results) <- NULL
-write.csv(exact_results,
-          file.path(output_dir, "exact_operating_characteristics.csv"),
-          row.names = FALSE)
+
+# Numerical consistency checks for the mutually exclusive rejection paths.
+if (max(abs(
+  exact_results$PRN_any -
+    exact_results$PRN_all -
+    exact_results$PRN_positive
+)) > 1e-10) {
+  stop("PRN-any does not equal PRN-all + PRN-positive.")
+}
+
+proposed_null_check <- exact_results[
+  exact_results$Method == "Globally calibrated" &
+    exact_results$scenario_type == "Null",
+  ,
+  drop = FALSE
+]
+if (max(proposed_null_check$PRN_any) > alpha + 1e-10 ||
+    max(proposed_null_check$PRN_any) < alpha_lower - 1e-10) {
+  stop("The selected proposed design is outside the prespecified alpha band.")
+}
+
+write.csv(
+  exact_results,
+  file.path(output_dir, "exact_operating_characteristics.csv"),
+  row.names = FALSE
+)
+
+# Fill the combined comparator operating characteristics only after its two
+# standalone components have been embedded in the adaptive enrichment design.
+comparator_null <- exact_results[
+  exact_results$Method == "Independent conventional BOP2 components" &
+    exact_results$scenario_type == "Null",
+  ,
+  drop = FALSE
+]
+comparator_calibration_alt <- exact_results[
+  exact_results$Method == "Independent conventional BOP2 components" &
+    exact_results$used_for_calibration,
+  ,
+  drop = FALSE
+]
+
+selected_designs$max_global_type1[2L] <- max(comparator_null$PRN_any)
+selected_designs$max_positive_type1[2L] <- max(comparator_null$PRN_positive)
+selected_designs$average_power[2L] <- mean(comparator_calibration_alt$PRN_any)
+selected_designs$minimum_power[2L] <- min(comparator_calibration_alt$PRN_any)
+write.csv(
+  selected_designs,
+  file.path(output_dir, "selected_designs.csv"),
+  row.names = FALSE
+)
 
 ## -----------------------------------------------------------------------------
 ## 7. Table-I-style boundary table for the proposed design only
@@ -1132,7 +1618,7 @@ get_p_boundary <- function(samples) {
 latex_lines <- c(
   "\\begin{table}[htbp]",
   "\\centering",
-  "\\caption{Decision boundaries of the proposed globally calibrated enrichment BOP2 design.}",
+  "\\caption{Futility boundaries of the proposed globally calibrated enrichment BOP2 design.}",
   "\\label{tab:proposed_boundaries}",
   "\\begin{tabular}{lccc}",
   "\\hline",
@@ -1166,7 +1652,7 @@ latex_lines <- c(
   "\\end{tabular}",
   "",
   "\\begin{minipage}{0.95\\textwidth}",
-  "\\footnotesize The all-comer boundaries apply at the interim analyses of 20 and 30 patients and at the final analysis of 40 patients. Biomarker-positive boundaries apply at the first biomarker-positive assessment and, when applicable, at subsequent analyses of 20 and 30 cumulative biomarker-positive patients and at the final analysis of 40 biomarker-positive patients. At an interim analysis, satisfying the listed rule results in stopping for futility. At the final analysis, satisfying the listed rule results in no efficacy claim.",
+  "\\footnotesize The all-comer boundaries apply at 20 and 30 patients and at the final look of 40 patients. The biomarker-positive boundaries from 10 to 30 patients apply when enrichment is first considered; the boundaries at 20 and 30 patients also apply at post-enrichment interim looks when those looks occur after enrichment begins. The boundary at 40 patients is the final biomarker-positive boundary. At a final look, crossing the boundary means that efficacy is not declared.",
   "\\end{minipage}",
   "\\end{table}"
 )
@@ -1201,16 +1687,18 @@ write.csv(
 
 settings_table <- data.frame(
   Parameter = c(
-    "Analysis type", "p0", "p1", "alpha",
+    "Analysis type", "branching rule", "p0", "p1", "alpha", "alpha_lower",
     "calibration alternative",
     "all-comer interim looks", "post-enrichment positive looks",
     "N_A", "N_positive", "n_positive_min", "prior_a", "prior_b",
     "prevalence grid", "theta_positive grid", "theta_negative grid",
-    "lambda grid", "gamma grid", "detected physical cores",
+    "proposed lambda grid", "proposed gamma grid",
+    "standalone BOP2 lambda grid", "standalone BOP2 gamma grid",
+    "detected physical cores",
     "number of workers used", "parallel backend"
   ),
   Value = c(
-    "Exact recursive enumeration", p0, p1, alpha,
+    "Exact recursive enumeration", "No bridging", p0, p1, alpha, alpha_lower,
     paste0("theta_positive = ", p1, "; theta_negative = ", p0),
     paste(interim_n, collapse = ", "),
     paste(post_enrichment_n, collapse = ", "),
@@ -1218,10 +1706,14 @@ settings_table <- data.frame(
     paste(prevalence_grid, collapse = ", "),
     paste(theta_pos_grid, collapse = ", "),
     paste(theta_neg_grid, collapse = ", "),
-    paste0(min(lambda_grid), " to ", max(lambda_grid),
-           " by ", unique(round(diff(lambda_grid), 12))),
-    paste0(min(gamma_grid), " to ", max(gamma_grid),
-           " by ", unique(round(diff(gamma_grid), 12))),
+    paste0(min(proposed_lambda_grid), " to ", max(proposed_lambda_grid),
+           " by ", unique(round(diff(proposed_lambda_grid), 12))),
+    paste0(min(proposed_gamma_grid), " to ", max(proposed_gamma_grid),
+           " by ", unique(round(diff(proposed_gamma_grid), 12))),
+    paste0(min(bop2_lambda_grid), " to ", max(bop2_lambda_grid),
+           " by ", unique(round(diff(bop2_lambda_grid), 12))),
+    paste0(min(bop2_gamma_grid), " to ", max(bop2_gamma_grid),
+           " by ", unique(round(diff(bop2_gamma_grid), 12))),
     detected_cores, n_cores, parallel_backend
   ),
   stringsAsFactors = FALSE
@@ -1243,7 +1735,11 @@ xlsx_created <- write_results_workbook(
     Exact_OC = exact_results,
     Candidate_counts = candidate_counts,
     Boundary_allcomer = allcomer_boundary_table,
-    Boundary_positive = positive_boundary_table
+    Boundary_positive = positive_boundary_table,
+    Proposed_candidate_counts = candidate_counts,
+    Proposed_calibration = proposed_calibration_diagnostics,
+    Comparator_allcomer_BOP2 = comparator_allcomer_boundary,
+    Comparator_positive_BOP2 = positive_bop2_library
   ),
   path = xlsx_path
 )

@@ -1,0 +1,6 @@
+"step","elapsed_seconds"
+"candidate_generation_seconds",0.336
+"positive_kernel_seconds",6.718
+"allcomer_component_seconds",0.484
+"joint_selection_seconds",0.368
+"total_calibration_seconds",7.919

@@ -1,46 +1,61 @@
-# Manuscript output map
+# Manuscript output mapping
 
 ## Main manuscript
 
-Run:
-
-```bash
-Rscript run_main.R
-```
-
-| Manuscript label | Generated file | Source analysis |
+| Manuscript content | Generated file | Source script |
 |---|---|---|
-| `tab:proposed_boundaries_compact` | `tables/main/table_proposed_boundaries_compact.tex` | Exact binary-endpoint calibration |
-| `tab:type1_exact` | `tables/main/table_type1_exact.tex` | Exact binary-endpoint type I error |
-| `tab:power_comparison_exact_0p4` | `tables/main/table_power_comparison_exact_theta_pos_0p4.tex` | Exact binary-endpoint power, theta-positive = 0.4 |
-| `tab:power_comparison_exact_0p5` | `tables/main/table_power_comparison_exact_theta_pos_0p5.tex` | Exact binary-endpoint power, theta-positive = 0.5 |
-| `tab:power_comparison_exact_0p6` | `tables/main/table_power_comparison_exact_theta_pos_0p6.tex` | Exact binary-endpoint power, theta-positive = 0.6 |
+| Proposed boundary table | `tables/main/table_proposed_boundaries_compact.tex` | `R/02_main_tables.R` |
+| Exact global type I error | `tables/main/table_type1_exact.tex` | `R/02_main_tables.R` |
+| Power, \(\theta_+=0.4\) | `tables/main/table_power_comparison_exact_theta_pos_0p4.tex` | `R/02_main_tables.R` |
+| Power, \(\theta_+=0.5\) | `tables/main/table_power_comparison_exact_theta_pos_0p5.tex` | `R/02_main_tables.R` |
+| Power, \(\theta_+=0.6\) | `tables/main/table_power_comparison_exact_theta_pos_0p6.tex` | `R/02_main_tables.R` |
+| Main-table input list | `tables/main/main_tables_input.tex` | `R/02_main_tables.R` |
 
-The main numerical outputs are written to `results/main/`.
+## Additional binary-endpoint outputs
 
-## Supplementary material: detailed binary enrichment path
+| Content | Generated file |
+|---|---|
+| Selected tuning parameters | `tables/main/table_selected_designs.tex` |
+| Proposed operating characteristics | `tables/main/table_proposed_oc_exact_theta_pos_*.tex` |
+| No-bridging enrichment-path results | `tables/main/table_proposed_enrichment_path_exact_theta_pos_*.tex` |
+| Conventional all-comer comparator | `tables/main/table_comparator_allcomer_bop2.tex` |
+| Entry-specific positive comparator library | `tables/main/table_comparator_positive_bop2_library.tex` |
+| Supplemental binary-table input list | `tables/main/supplemental_tables_input.tex` |
 
-These tables are produced by the same command, `Rscript run_main.R`.
+## Supplementary Material: complex endpoints
 
-| Supplementary label | Generated file | Source analysis |
+| Manuscript content | Generated file | Source script |
 |---|---|---|
-| `tab:proposed_enrichment_path_exact_0p4` | `tables/main/table_proposed_enrichment_path_exact_theta_pos_0p4.tex` | Exact binary enrichment-path operating characteristics, theta-positive = 0.4 |
-| `tab:proposed_enrichment_path_exact_0p5` | `tables/main/table_proposed_enrichment_path_exact_theta_pos_0p5.tex` | Exact binary enrichment-path operating characteristics, theta-positive = 0.5 |
-| `tab:proposed_enrichment_path_exact_0p6` | `tables/main/table_proposed_enrichment_path_exact_theta_pos_0p6.tex` | Exact binary enrichment-path operating characteristics, theta-positive = 0.6 |
+| Selected complex-endpoint designs | `tables/supplement/table_complex_endpoint_selected_designs.tex` | `R/04_supp_tables.R` |
+| Proposed complex-endpoint boundaries | `tables/supplement/table_complex_endpoint_boundaries_compact.tex` | `R/04_supp_tables.R` |
+| Complex-endpoint global type I error | `tables/supplement/table_complex_endpoint_type1.tex` | `R/04_supp_tables.R` |
+| Standalone all-comer comparator boundaries | `tables/supplement/table_complex_endpoint_standalone_allcomer_bop2.tex` | `R/04_supp_tables.R` |
+| Positive comparator library: nested endpoint | `tables/supplement/table_complex_endpoint_positive_bop2_library_nested.tex` | `R/04_supp_tables.R` |
+| Positive comparator library: co-primary endpoint | `tables/supplement/table_complex_endpoint_positive_bop2_library_coprimary.tex` | `R/04_supp_tables.R` |
+| Positive comparator library: efficacy--toxicity endpoint | `tables/supplement/table_complex_endpoint_positive_bop2_library_efficacy_toxicity.tex` | `R/04_supp_tables.R` |
+| Complex-table input list | `tables/supplement/supplemental_complex_endpoint_tables_input.tex` | `R/04_supp_tables.R` |
 
-`tables/main/supplemental_tables_input.tex` inputs these three tables.
+## Primary result files
 
-## Supplementary material: complex categorical endpoints
+Binary results are written to `results/main/`. Complex-endpoint results are written to `results/supplement/`. In particular, the complex-endpoint simulation writes:
 
-Run:
+- `complex_endpoint_proposed_boundaries.csv`;
+- `complex_endpoint_comparator_boundaries.csv`;
+- `complex_endpoint_standalone_allcomer_bop2.csv`; and
+- `complex_endpoint_standalone_positive_bop2_library.csv`.
 
-```bash
-Rscript run_supplement.R
-```
+## Reviewer-requested analyses (S5--S8) and case-study outputs
 
-| Supplementary label | Generated file | Source analysis |
-|---|---|---|
-| `tab:complex_endpoint_boundaries_compact` | `tables/supplement/table_complex_endpoint_boundaries_compact.tex` | Complex-endpoint simulation calibration |
-| `tab:complex_endpoint_type1` | `tables/supplement/table_complex_endpoint_type1.tex` | Independent complex-endpoint type I error simulation |
+The script names and committed reference output files are mapped in `REVISION_REPRODUCIBILITY.md`.
 
-The supplementary numerical outputs are written to `results/supplement/`.
+| Revised manuscript item | Code or committed reference result |
+|---|---|
+| S5 / Table S7: sensitivity to `(p0,p1)` | `R/revision/R1M1_additional_settings_exact.R`; `reference_results/R1_benchmarks/primary_gamma8/ALL_summary.csv` and `ALL_selected_designs.csv` (separate exploratory `gamma12/` outputs retained) |
+| S6 / Table S8: reversed response ordering | `R/revision/R1M2_reverse_order_exact.R`; `reference_results/R1_reversed/R1M2_reverse_table_percent.csv` |
+| S7 / Table S9: biomarker-positive-only efficacy | `R/revision/R2_Comments2_3_subgroup_only_exact.R`; `reference_results/R2_claims/R2_C2_subgroup_only_percent.csv` |
+| S8 / Table S10: adjusted comparator, point-global-null error | `R/revision/R2_Comment4_error_matched_BOP2.R`; `reference_results/R2_adjusted/R2_C4_Point_global_null_percent.csv` |
+| S8 / Table S11: 30 alternative settings | same script; `reference_results/R2_adjusted/R2_C4_Original_30_alternatives_percent.csv` |
+| Case study: prospectively selected boundaries | `R/revision/case_study_boundary_calibration_timing.R`; `reference_results/case_study/` |
+| Main runtime / S3 | `R/revision/main_binary_boundary_calibration_timing.R`; `reference_results/timing/` |
+
+The R1-M1 `ALL_summary.csv` is not included because the actual R-run output for the chosen gamma grid was not available. The `reference_results/R1_benchmarks/` JSON files are *independent Python validation*, not R outputs.

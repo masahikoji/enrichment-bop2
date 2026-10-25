@@ -1,0 +1,14 @@
+"quantity","value"
+"unconstrained all-comer boundary candidates",55
+"unconstrained positive boundary candidates",462
+"positive candidates after clinical constraint",188
+"candidate pairs evaluated",10340
+"candidate pairs with max global type I <= alpha",6498
+"candidate pairs in [alpha_lower, alpha]",116
+"selected lambda_A",0.785
+"selected gamma_A",0.05
+"selected lambda_positive",0.785
+"selected gamma_positive",0.05
+"selected max global type I",0.0998026394716768
+"selected average working-alternative PRN-any",0.276456673944517
+"selected minimum working-alternative PRN-any",0.225123575862418
